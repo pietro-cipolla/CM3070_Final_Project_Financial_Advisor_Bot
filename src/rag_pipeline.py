@@ -4,12 +4,13 @@ RAG Pipeline layer — ticker extraction and prompt construction.
 
 Iteration 1: extends single-ticker extraction to support up to 3 companies
 in one query (e.g. "Compare Apple, Microsoft and Google"), instead of only
-ever using the first ticker found.
+ever using the first ticker found. build_prompt() now also accepts a list
+of stock_data dicts and builds a comparative context block for them.
 """
 
 import os
 from openai import OpenAI
-from src.financial_data import build_data_context
+from src.financial_data import build_data_context, build_comparative_context
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -69,22 +70,38 @@ def extract_tickers_from_query(query: str) -> list[str]:
         return []
 
 
-def build_prompt(stock_data: dict, user_query: str) -> list[dict]:
+def build_prompt(stock_data, user_query: str) -> list[dict]:
     """
     Construct the message list for the OpenAI Chat API.
-    Combines system role definition, retrieved financial context, and user query.
-    """
-    data_context = build_data_context(stock_data)
 
-    system_prompt = (
-        "You are a financial advisor assistant. Your role is to help non-technical "
-        "retail investors understand stocks and make more informed decisions. "
-        "You always base your analysis strictly on the retrieved financial data provided "
-        "in the context block below — never invent numbers or cite data not present in the context. "
-        "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
-        "Keep responses concise and structured.\n\n"
-        f"{data_context}"
-    )
+    Accepts either a single stock_data dict (single-ticker path, kept for
+    backward compatibility) or a list of stock_data dicts (multi-ticker
+    comparative path), and builds the appropriate context block.
+    """
+    if isinstance(stock_data, list):
+        data_context = build_comparative_context(stock_data)
+        instruction = (
+            "You are a financial advisor assistant. Your role is to help non-technical "
+            "retail investors understand and compare stocks. "
+            "You always base your analysis strictly on the retrieved financial data provided "
+            "in the context block below — never invent numbers or cite data not present in the context. "
+            "When multiple companies are present, explicitly compare them across the metrics given "
+            "(valuation, growth, risk) rather than describing each one in isolation. "
+            "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
+            "Keep responses concise and structured.\n\n"
+        )
+    else:
+        data_context = build_data_context(stock_data)
+        instruction = (
+            "You are a financial advisor assistant. Your role is to help non-technical "
+            "retail investors understand stocks and make more informed decisions. "
+            "You always base your analysis strictly on the retrieved financial data provided "
+            "in the context block below — never invent numbers or cite data not present in the context. "
+            "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
+            "Keep responses concise and structured.\n\n"
+        )
+
+    system_prompt = f"{instruction}{data_context}"
 
     return [
         {"role": "system", "content": system_prompt},

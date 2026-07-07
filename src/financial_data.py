@@ -1,21 +1,28 @@
 """
 financial_data.py
 Data Retrieval layer — fetches stock data from Yahoo Finance via yfinance.
+
+Iteration 1: adds multi-ticker retrieval and a comparative context block
+so the RAG pipeline can answer questions that mention more than one company
+(e.g. "Compare Apple and Microsoft").
 """
 
 import yfinance as yf
 from datetime import datetime
 
+MAX_TICKERS = 3
+
 
 def get_stock_summary(ticker: str) -> dict:
     """
-    Fetch key financial data for a given ticker symbol.
+    Fetch key financial data for a single ticker symbol.
     Returns a flat dictionary of data points, or {'error': '...'} on failure.
     """
     try:
         stock = yf.Ticker(ticker.upper())
         info = stock.info
 
+        # Validate that we received a real ticker
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             return {"error": f"No data found for ticker '{ticker}'. It may be delisted or invalid."}
 
@@ -27,6 +34,7 @@ def get_stock_summary(ticker: str) -> dict:
         week_high = info.get("fiftyTwoWeekHigh")
         week_range = f"{week_low} – {week_high}" if week_low and week_high else "N/A"
 
+        # Recent news headlines (up to 3)
         news_items = stock.news or []
         headlines = [item.get("title", "") for item in news_items[:3] if item.get("title")]
 
@@ -53,9 +61,25 @@ def get_stock_summary(ticker: str) -> dict:
         return {"error": str(e)}
 
 
+def get_multiple_stock_summaries(tickers: list[str]) -> list[dict]:
+    """
+    Fetch stock summaries for up to MAX_TICKERS tickers.
+    Each entry in the returned list is the dict produced by get_stock_summary,
+    tagged with its ticker even in the error case so the caller can report
+    which specific ticker failed.
+    """
+    results = []
+    for ticker in tickers[:MAX_TICKERS]:
+        summary = get_stock_summary(ticker)
+        if "error" in summary:
+            summary = {"ticker": ticker.upper(), **summary}
+        results.append(summary)
+    return results
+
+
 def build_data_context(stock_data: dict) -> str:
     """
-    Convert the stock data dictionary into a structured text block
+    Convert a single stock data dictionary into a structured text block
     to be injected into the RAG prompt as context.
     """
     headlines_text = ""
@@ -89,3 +113,31 @@ Company description: {stock_data.get('description', 'N/A')}
 Data retrieved at: {stock_data.get('timestamp', 'N/A')}
 =================================
 """
+
+
+def build_comparative_context(stock_data_list: list[dict]) -> str:
+    """
+    Build a single context block covering multiple tickers so the LLM can
+    compare them directly instead of receiving isolated single-stock blocks.
+
+    Tickers that failed retrieval are listed separately so the model (and
+    the transparency panel in the UI) can be explicit about what data is
+    actually available, rather than silently ignoring the failure.
+    """
+    valid = [d for d in stock_data_list if "error" not in d]
+    failed = [d for d in stock_data_list if "error" in d]
+
+    if not valid:
+        return "=== RETRIEVED FINANCIAL DATA ===\nNo valid data could be retrieved for any requested ticker.\n=================================\n"
+
+    blocks = [build_data_context(d).strip() for d in valid]
+
+    header = f"=== COMPARATIVE FINANCIAL DATA ({len(valid)} companies) ===\n"
+    body = "\n\n".join(blocks)
+
+    footer = ""
+    if failed:
+        failed_list = ", ".join(d["ticker"] for d in failed)
+        footer = f"\n\nNote: data could not be retrieved for: {failed_list}. Do not fabricate figures for these tickers."
+
+    return f"{header}\n{body}{footer}\n"
