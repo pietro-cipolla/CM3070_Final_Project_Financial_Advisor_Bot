@@ -1,18 +1,18 @@
 """
 Financial Advisor Bot — Feature Prototype
-Iteration 1: adds query intent classification as a first pass over the
-user's query, before ticker extraction runs.
+Iteration 1: adds query intent classification, a clarification flow for
+open-ended/unclear queries, and multi-ticker (up to 3) comparative retrieval.
 """
 
 import streamlit as st
-from src.financial_data import get_stock_summary
-from src.rag_pipeline import classify_query_intent, extract_ticker_from_query, build_prompt
+from src.financial_data import get_stock_summary, get_multiple_stock_summaries
+from src.rag_pipeline import classify_query_intent, extract_tickers_from_query, build_prompt
 from src.advisor import get_advice
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈")
 st.title("📈 Financial Advisor Bot")
-st.caption("Ask a question about any publicly traded stock.")
+st.caption("Ask a question about one or more publicly traded stocks (up to 3).")
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
@@ -24,7 +24,9 @@ for msg in st.session_state.messages:
         st.write(msg["content"])
 
 # ── Chat input ────────────────────────────────────────────────────────────────
-user_query = st.chat_input("e.g. Should I buy Apple stock? What is Tesla's P/E ratio?")
+user_query = st.chat_input(
+    "e.g. Should I buy Apple stock? Compare Tesla and Ford."
+)
 
 if user_query:
     # Show user message
@@ -36,44 +38,49 @@ if user_query:
         with st.spinner("Understanding your question..."):
             intent = classify_query_intent(user_query)
 
-        if intent != "stock_query":
-            # TODO (next commit): distinguish open_ended vs unclear with
-            # separate, more specific messages.
+        if intent == "unclear":
             response = (
-                "I need a bit more detail to help you. Could you mention a "
-                "specific company name or ticker symbol? "
-                "For example: *'Should I buy Apple stock?'* or *'What is TSLA's P/E ratio?'*"
+                "I'm not sure what you're asking. Could you rephrase your question "
+                "and mention a company name or ticker symbol? "
+                "For example: *'What is Tesla's P/E ratio?'* or *'Compare Apple and Microsoft.'*"
             )
             st.write(response)
-        else:
+
+        elif intent == "open_ended":
+            response = (
+                "That's a broad question — to give you a grounded answer I need to know "
+                "which company or companies you're interested in. "
+                "Could you name a specific stock (e.g. *'Should I buy Apple?'*), "
+                "or up to three to compare (e.g. *'Compare Apple, Microsoft and Google'*)?"
+            )
+            st.write(response)
+
+        else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):
+                tickers = extract_tickers_from_query(user_query)
 
-                # Step 1 — Extract ticker
-                ticker = extract_ticker_from_query(user_query)
-
-                if not ticker:
+                if not tickers:
                     response = (
                         "I could not identify a stock ticker in your query. "
                         "Please mention a company name or ticker symbol, "
                         "for example: *'Tell me about Apple'* or *'What is TSLA's P/E ratio?'*"
                     )
                     st.write(response)
-                else:
-                    # Step 2 — Retrieve financial data
-                    stock_data = get_stock_summary(ticker)
+
+                elif len(tickers) == 1:
+                    stock_data = get_stock_summary(tickers[0])
 
                     if "error" in stock_data:
                         response = (
-                            f"Could not retrieve data for **{ticker}**: {stock_data['error']}. "
+                            f"Could not retrieve data for **{tickers[0]}**: {stock_data['error']}. "
                             "Please check the ticker symbol and try again."
                         )
                         st.write(response)
                     else:
-                        # Step 3 — Show raw data retrieved (transparency)
-                        with st.expander(f"📊 Data retrieved for {ticker}", expanded=True):
+                        with st.expander(f"📊 Data retrieved for {tickers[0]}", expanded=True):
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.write(f"**Company:** {stock_data.get('name', ticker)}")
+                                st.write(f"**Company:** {stock_data.get('name', tickers[0])}")
                                 st.write(f"**Current price:** ${stock_data.get('price', 'N/A')}")
                                 st.write(f"**Day change:** {stock_data.get('change_pct', 'N/A')}%")
                                 st.write(f"**52-week range:** {stock_data.get('52_week_range', 'N/A')}")
@@ -84,8 +91,37 @@ if user_query:
                                 st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
                             st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
 
-                        # Step 4 — Build RAG prompt and call LLM
                         messages = build_prompt(stock_data, user_query)
+                        response = get_advice(messages)
+                        st.write(response)
+
+                else:  # multi-ticker comparative path (2 or 3 tickers)
+                    stock_data_list = get_multiple_stock_summaries(tickers)
+                    valid = [d for d in stock_data_list if "error" not in d]
+                    failed = [d for d in stock_data_list if "error" in d]
+
+                    with st.expander(f"📊 Data retrieved for {', '.join(tickers)}", expanded=True):
+                        for stock_data in valid:
+                            st.write(f"**{stock_data['ticker']} — {stock_data.get('name', '')}**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"Price: ${stock_data.get('price', 'N/A')}")
+                                st.write(f"Day change: {stock_data.get('change_pct', 'N/A')}%")
+                            with col2:
+                                st.write(f"P/E ratio: {stock_data.get('pe_ratio', 'N/A')}")
+                                st.write(f"Analyst rating: {stock_data.get('recommendation', 'N/A')}")
+                            st.divider()
+                        for stock_data in failed:
+                            st.warning(f"⚠️ Could not retrieve data for {stock_data['ticker']}: {stock_data['error']}")
+
+                    if not valid:
+                        response = (
+                            "I could not retrieve data for any of the requested tickers "
+                            f"({', '.join(tickers)}). Please check the symbols and try again."
+                        )
+                        st.write(response)
+                    else:
+                        messages = build_prompt(stock_data_list, user_query)
                         response = get_advice(messages)
                         st.write(response)
 
