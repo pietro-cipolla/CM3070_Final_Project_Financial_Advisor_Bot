@@ -1,11 +1,16 @@
 """
 rag_pipeline.py
-RAG Pipeline layer — ticker extraction and prompt construction.
+RAG Pipeline layer — query intent classification, ticker extraction and
+prompt construction.
 
-Iteration 1: extends single-ticker extraction to support up to 3 companies
-in one query (e.g. "Compare Apple, Microsoft and Google"), instead of only
-ever using the first ticker found. build_prompt() now also accepts a list
-of stock_data dicts and builds a comparative context block for them.
+Iteration 1 additions:
+  1. Multi-ticker extraction: a query can now reference up to 3 companies
+     (e.g. "Compare Apple, Microsoft and Google"), instead of only the first
+     ticker found.
+  2. Query intent classification: queries are classified before ticker
+     extraction runs, so open-ended / off-topic queries can be routed to a
+     clarification prompt instead of silently failing or hallucinating
+     an answer with no financial grounding.
 """
 
 import os
@@ -15,6 +20,52 @@ from src.financial_data import build_data_context, build_comparative_context
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_TICKERS = 3
+
+VALID_INTENTS = {"stock_query", "open_ended", "unclear"}
+
+
+def classify_query_intent(query: str) -> str:
+    """
+    Classify the user's query into one of three intents:
+
+      - "stock_query":  the query names or clearly implies specific
+                         company/companies (e.g. "What is Tesla's P/E?",
+                         "Compare AAPL and MSFT").
+      - "open_ended":    the query asks for general investment advice
+                         without naming a specific stock (e.g. "What should
+                         I invest in?", "Is now a good time to buy stocks?").
+      - "unclear":       the query is off-topic, empty of financial meaning,
+                         or too ambiguous to act on.
+
+    Defaults to "stock_query" on classification failure, so a downstream
+    ticker-extraction miss (rather than a silent misclassification) is what
+    surfaces to the user — this keeps failures visible instead of masking
+    them behind a generic clarification message.
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=5,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the user's financial query into exactly one label: "
+                        "stock_query, open_ended, or unclear.\n"
+                        "- stock_query: names or clearly implies one or more specific companies/tickers.\n"
+                        "- open_ended: asks for general investing advice with no specific company named.\n"
+                        "- unclear: off-topic, empty, or too ambiguous to act on.\n"
+                        "Reply with ONLY the label, nothing else."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+        )
+        label = response.choices[0].message.content.strip().lower()
+        return label if label in VALID_INTENTS else "stock_query"
+    except Exception:
+        return "stock_query"
 
 
 def extract_ticker_from_query(query: str) -> str | None:
