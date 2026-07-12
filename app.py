@@ -4,6 +4,9 @@ Iteration 1: adds query intent classification, a clarification flow for
 open-ended/unclear queries, and multi-ticker (up to 3) comparative retrieval.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 from src.financial_data import get_stock_summary, get_multiple_stock_summaries
 from src.rag_pipeline import classify_query_intent, extract_tickers_from_query, build_prompt
