@@ -19,13 +19,13 @@ This repository tracks the incremental development of the system across Phase 2 
 
 | Iteration | Description | Status |
 |---|---|---|
-| 0 — Baseline | Simple prototype from preliminary report | ✅ Done |
-| 1 — Multi-ticker + Intent detection | Handle multi-stock queries and open-ended questions | ✅ Current |
-| 2 — NewsAPI + Visualisation | Real-time news and interactive price charts | ⬜ Planned |
-| 3 — Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ⬜ Planned |
-| 4 — Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ⬜ Planned |
-| 5 — User testing | 5-participant study, 20-query evaluation | ⬜ Planned |
-| 6 — Final polish | Documentation, refactoring, submission prep | ⬜ Planned |
+| 0 - Baseline | Simple prototype from preliminary report | ✅ Done |
+| 1 - Multi-ticker + Intent detection | Handle multi-stock queries and open-ended questions | ✅ Current |
+| 2 - NewsAPI + Visualisation | Real-time news and interactive price charts | ⬜ Planned |
+| 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ⬜ Planned |
+| 4 - Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ⬜ Planned |
+| 5 - User testing | 5-participant study, 20-query evaluation | ⬜ Planned |
+| 6 - Final polish | Documentation, refactoring, submission prep | ⬜ Planned |
 
 ---
 
@@ -72,7 +72,7 @@ financial-advisor-bot/
 
 ### Requirements
 - Python 3.10 or higher
-- An OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- An OpenAI API key
 
 ### Installation
 
@@ -102,10 +102,10 @@ The app will open at `http://localhost:8501` in your browser.
 
 Type any question about a publicly traded stock in the chat input. Examples:
 
-- *"Should I buy Apple stock?"*
-- *"What is Tesla's P/E ratio?"*
-- *"Tell me about NVDA"*
-- *"What do analysts think about Microsoft?"*
+- "Should I buy Apple stock?"
+- "What is Tesla's P/E ratio?"
+- "Tell me about NVDA"
+- "What do analysts think about Microsoft?"
 
 The bot will retrieve live data from Yahoo Finance and provide an analysis grounded in that data.
 
