@@ -83,6 +83,12 @@ def extract_tickers_from_query(query: str) -> list[str]:
     Use a zero-temperature LLM call to extract up to MAX_TICKERS stock
     tickers from the user's natural language query. Returns a list of
     uppercase ticker strings (e.g. ['AAPL', 'MSFT']), or [] if none found.
+
+    Only companies the user actually named (or unambiguously referenced,
+    e.g. by product name) are extracted — the model is explicitly told not
+    to add extra competitors or "for comparison" companies that were never
+    mentioned. Bug found in manual testing: "Compare Tesla and Ford" was
+    returning TSLA, F, AND GM (an unrequested competitor) before this fix.
     """
     try:
         response = client.chat.completions.create(
@@ -94,8 +100,12 @@ def extract_tickers_from_query(query: str) -> list[str]:
                     "role": "system",
                     "content": (
                         "You are a financial ticker extractor. "
-                        "Given a user query, identify up to 3 stock ticker symbols "
-                        "for the companies mentioned or clearly implied. "
+                        "Given a user query, identify stock ticker symbols ONLY for "
+                        "companies explicitly named or unambiguously referenced in the "
+                        "query itself (e.g. a product name like 'iPhone' clearly "
+                        "implies Apple). Do NOT add competitors, related companies, or "
+                        "any other company for context or comparison purposes — extract "
+                        "only what the user actually mentioned, up to a maximum of 3. "
                         "Reply with ONLY a comma-separated list of uppercase ticker "
                         "symbols (e.g. 'AAPL,MSFT,GOOGL'), with no spaces and no "
                         "other text. If no ticker can be identified, reply with "
