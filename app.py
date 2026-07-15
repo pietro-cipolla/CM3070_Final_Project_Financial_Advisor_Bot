@@ -12,6 +12,24 @@ from src.financial_data import get_stock_summary, get_multiple_stock_summaries
 from src.rag_pipeline import classify_query_intent, extract_tickers_from_query, build_prompt
 from src.advisor import get_advice
 
+
+def escape_dollars(text: str) -> str:
+    """
+    Streamlit's markdown renderer treats a pair of '$' as LaTeX math
+    delimiters. LLM responses routinely mention two or more dollar amounts
+    in the same paragraph (e.g. "target price of $423.40 ... current price
+    of $419.77"), which Streamlit then renders as a single garbled math
+    block instead of plain text.
+
+    A backslash escape ("\\$") is NOT enough — Streamlit's math-detection
+    still pairs up escaped dollar signs and swallows everything between
+    them. Replacing '$' with the HTML entity '&#36;' sidesteps this: the
+    raw '$' character never appears in the text Streamlit scans for math
+    delimiters, but the browser still renders the entity as a normal '$'.
+    """
+    return text.replace("$", "&#36;")
+
+
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈")
 st.title("📈 Financial Advisor Bot")
@@ -95,7 +113,7 @@ if user_query:
                             st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
 
                         messages = build_prompt(stock_data, user_query)
-                        response = get_advice(messages)
+                        response = escape_dollars(get_advice(messages))
                         st.write(response)
 
                 else:  # multi-ticker comparative path (2 or 3 tickers)
@@ -125,7 +143,7 @@ if user_query:
                         st.write(response)
                     else:
                         messages = build_prompt(stock_data_list, user_query)
-                        response = get_advice(messages)
+                        response = escape_dollars(get_advice(messages))
                         st.write(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
