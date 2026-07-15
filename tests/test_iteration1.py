@@ -44,6 +44,23 @@ def test_extract_tickers_none_found():
         assert extract_tickers_from_query("What is the weather today?") == []
 
 
+def test_extract_tickers_filters_stray_none_padding():
+    """
+    Regression test: observed in manual testing that the model sometimes
+    pads a short result with a stray '.NONE' token instead of returning
+    only the tickers it actually found (e.g. 'TSLA,F,.NONE' for a 2-company
+    query). These artifacts must be filtered out defensively in code,
+    since prompt wording alone did not fully prevent them.
+    """
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("TSLA,F,.NONE")):
+        assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
+
+
+def test_extract_tickers_filters_none_mixed_with_real_tickers():
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("TSLA,F,NONE")):
+        assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
+
+
 def test_extract_tickers_dedup_and_cap_at_three():
     # 5 raw tickers with a duplicate — must dedupe AND cap at MAX_TICKERS (3)
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL,AAPL,MSFT,GOOGL,TSLA")):

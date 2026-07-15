@@ -106,10 +106,13 @@ def extract_tickers_from_query(query: str) -> list[str]:
                         "implies Apple). Do NOT add competitors, related companies, or "
                         "any other company for context or comparison purposes — extract "
                         "only what the user actually mentioned, up to a maximum of 3. "
+                        "If you find fewer than 3 companies, return only the ones you "
+                        "found — never pad the list with a placeholder. "
                         "Reply with ONLY a comma-separated list of uppercase ticker "
                         "symbols (e.g. 'AAPL,MSFT,GOOGL'), with no spaces and no "
-                        "other text. If no ticker can be identified, reply with "
-                        "exactly: NONE"
+                        "other text. The word NONE must appear only as the entire "
+                        "reply on its own, never mixed in with real tickers, and only "
+                        "when no ticker at all can be identified."
                     ),
                 },
                 {"role": "user", "content": query},
@@ -119,6 +122,12 @@ def extract_tickers_from_query(query: str) -> list[str]:
         if result == "NONE" or not result:
             return []
         tickers = [t.strip() for t in result.split(",") if t.strip()]
+        # Defensive filter: even with the prompt above, the model has been
+        # observed padding a short list with a stray "NONE" / ".NONE" token
+        # instead of just returning the real tickers it found. Drop anything
+        # that isn't a plausible ticker (must start with a letter and must
+        # not contain "NONE") rather than trusting the model's formatting.
+        tickers = [t for t in tickers if t[:1].isalpha() and "NONE" not in t]
         # De-duplicate while preserving order, cap at MAX_TICKERS
         seen = set()
         deduped = []
