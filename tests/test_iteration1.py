@@ -61,6 +61,17 @@ def test_extract_tickers_filters_none_mixed_with_real_tickers():
         assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
 
 
+def test_extract_tickers_corrects_company_name_instead_of_ticker():
+    """
+    Regression test: observed in manual testing that the model sometimes
+    writes the company name in caps instead of the real ticker (e.g. 'FORD'
+    instead of 'F'), which then fails at the yfinance lookup step. Known
+    cases are corrected via COMMON_TICKER_FIXES.
+    """
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("TSLA,FORD")):
+        assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
+
+
 def test_extract_tickers_dedup_and_cap_at_three():
     # 5 raw tickers with a duplicate — must dedupe AND cap at MAX_TICKERS (3)
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL,AAPL,MSFT,GOOGL,TSLA")):

@@ -23,6 +23,23 @@ MAX_TICKERS = 3
 
 VALID_INTENTS = {"stock_query", "open_ended", "unclear"}
 
+# Safety net for a known LLM failure mode: gpt-4o-mini occasionally writes
+# out the company name in caps instead of the real exchange ticker (e.g.
+# "FORD" instead of "F", observed in manual testing). Prompt wording alone
+# did not fully prevent this, so common cases are corrected in code. This
+# is a stopgap, not a general solution — a proper fix would validate/
+# resolve tickers against a real symbol-lookup service (candidate for a
+# later iteration).
+COMMON_TICKER_FIXES = {
+    "FORD": "F",
+    "GOOGLE": "GOOGL",
+    "ALPHABET": "GOOGL",
+    "FACEBOOK": "META",
+    "GENERALMOTORS": "GM",
+    "BERKSHIRE": "BRK.B",
+    "BERKSHIREHATHAWAY": "BRK.B",
+}
+
 
 def classify_query_intent(query: str) -> str:
     """
@@ -108,6 +125,11 @@ def extract_tickers_from_query(query: str) -> list[str]:
                         "only what the user actually mentioned, up to a maximum of 3. "
                         "If you find fewer than 3 companies, return only the ones you "
                         "found — never pad the list with a placeholder. "
+                        "Always use the REAL stock exchange ticker symbol, never the "
+                        "company name written in capital letters. For example: Ford "
+                        "Motor Company's ticker is F, not FORD; Alphabet/Google's "
+                        "ticker is GOOGL, not GOOGLE or ALPHABET; Meta/Facebook's "
+                        "ticker is META, not FACEBOOK. "
                         "Reply with ONLY a comma-separated list of uppercase ticker "
                         "symbols (e.g. 'AAPL,MSFT,GOOGL'), with no spaces and no "
                         "other text. The word NONE must appear only as the entire "
@@ -128,6 +150,10 @@ def extract_tickers_from_query(query: str) -> list[str]:
         # that isn't a plausible ticker (must start with a letter and must
         # not contain "NONE") rather than trusting the model's formatting.
         tickers = [t for t in tickers if t[:1].isalpha() and "NONE" not in t]
+        # Correct known company-name-instead-of-ticker mistakes (see
+        # COMMON_TICKER_FIXES above) before dedup/cap, so a fixed ticker
+        # that duplicates another extracted ticker still gets deduped.
+        tickers = [COMMON_TICKER_FIXES.get(t, t) for t in tickers]
         # De-duplicate while preserving order, cap at MAX_TICKERS
         seen = set()
         deduped = []
