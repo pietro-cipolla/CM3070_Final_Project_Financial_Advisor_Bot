@@ -119,4 +119,4 @@ The bot will retrieve live data from Yahoo Finance and provide an analysis groun
 
 ## Academic context
 
-This project is submitted as part of the CM3070 Final Project module, BSc Computer Science, University of London. The RAG-based approach was chosen over classical reinforcement learning for financial advisory, as it provides more reliable, data-grounded responses with lower infrastructure requirements — a design decision documented and justified in the project report.
+This project is submitted as part of the CM3070 Final Project module, BSc Computer Science, University of London. The RAG-based approach was chosen over classical reinforcement learning for financial advisory, as it provides more reliable, data-grounded responses with lower infrastructure requirements, a design decision documented and justified in the project report.
