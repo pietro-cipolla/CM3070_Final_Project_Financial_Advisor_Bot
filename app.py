@@ -9,7 +9,7 @@ load_dotenv()
 
 import streamlit as st
 from src.financial_data import get_stock_summary, get_multiple_stock_summaries
-from src.rag_pipeline import classify_query_intent, extract_tickers_from_query, build_prompt
+from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
 
 
@@ -78,7 +78,14 @@ if user_query:
 
         else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):
-                tickers = extract_tickers_from_query(user_query)
+                tickers, truncated = extract_tickers_with_truncation_info(user_query)
+
+                if truncated:
+                    st.info(
+                        f"You mentioned more than {MAX_TICKERS} companies — this tool "
+                        f"compares up to {MAX_TICKERS} at a time. Comparing: "
+                        f"{', '.join(tickers)}."
+                    )
 
                 if not tickers:
                     response = (

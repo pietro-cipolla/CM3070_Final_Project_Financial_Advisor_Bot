@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 from src.rag_pipeline import (
     extract_ticker_from_query,
     extract_tickers_from_query,
+    extract_tickers_with_truncation_info,
     classify_query_intent,
     build_prompt,
 )
@@ -70,6 +71,44 @@ def test_extract_tickers_corrects_company_name_instead_of_ticker():
     """
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("TSLA,FORD")):
         assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
+
+
+# ── extract_tickers_with_truncation_info ──────────────────────────────────────
+
+def test_truncation_info_flags_more_than_max_tickers():
+    """
+    Regression test: observed in manual testing that when a query names
+    more than 3 companies, the 4th was silently dropped before the LLM ever
+    saw it — which led the model to fabricate a misleading explanation
+    ("we don't have data for Amazon") for a company it was never asked
+    about. The UI needs to know truncation happened so it can say so
+    explicitly instead.
+    """
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL,MSFT,GOOGL,AMZN")):
+        tickers, truncated = extract_tickers_with_truncation_info("Compare Apple, Microsoft, Google and Amazon")
+        assert tickers == ["AAPL", "MSFT", "GOOGL"]
+        assert truncated is True
+
+
+def test_truncation_info_false_when_within_limit():
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("TSLA,F")):
+        tickers, truncated = extract_tickers_with_truncation_info("Compare Tesla and Ford")
+        assert tickers == ["TSLA", "F"]
+        assert truncated is False
+
+
+def test_truncation_info_false_when_no_tickers_found():
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("NONE")):
+        tickers, truncated = extract_tickers_with_truncation_info("What is the weather today?")
+        assert tickers == []
+        assert truncated is False
+
+
+def test_truncation_info_single_llm_call_per_invocation():
+    """extract_tickers_with_truncation_info must not call the API twice."""
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL")) as mock_create:
+        extract_tickers_with_truncation_info("Tell me about Apple")
+        assert mock_create.call_count == 1
 
 
 def test_extract_tickers_dedup_and_cap_at_three():

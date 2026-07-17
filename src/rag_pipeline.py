@@ -3,12 +3,12 @@ rag_pipeline.py
 RAG Pipeline layer — query intent classification, ticker extraction and
 prompt construction.
 
-Iteration 1 additions:
+Iteration 1 additions (Preliminary Report, Table 4.2 — HIGH priority items):
   1. Multi-ticker extraction: a query can now reference up to 3 companies
      (e.g. "Compare Apple, Microsoft and Google"), instead of only the first
      ticker found.
   2. Query intent classification: queries are classified before ticker
-     extraction runs, so open-ended / off-topic queries can be routed to a
+     extraction runs, so open-ended / off-topic queries are routed to a
      clarification prompt instead of silently failing or hallucinating
      an answer with no financial grounding.
 """
@@ -95,17 +95,19 @@ def extract_ticker_from_query(query: str) -> str | None:
     return tickers[0] if tickers else None
 
 
-def extract_tickers_from_query(query: str) -> list[str]:
+def _extract_all_tickers(query: str) -> list[str]:
     """
-    Use a zero-temperature LLM call to extract up to MAX_TICKERS stock
-    tickers from the user's natural language query. Returns a list of
-    uppercase ticker strings (e.g. ['AAPL', 'MSFT']), or [] if none found.
+    Internal helper: makes the single LLM call used by ticker extraction and
+    returns the FULL de-duplicated, corrected list of tickers found — before
+    the MAX_TICKERS cap is applied. Both extract_tickers_from_query() and
+    extract_tickers_with_truncation_info() build on this so the LLM is only
+    called once per query regardless of which public function is used.
 
     Only companies the user actually named (or unambiguously referenced,
     e.g. by product name) are extracted — the model is explicitly told not
     to add extra competitors or "for comparison" companies that were never
-    mentioned. Bug found in manual testing: "Compare Tesla and Ford" was
-    returning TSLA, F, AND GM (an unrequested competitor) before this fix.
+    mentioned, since that produced unrequested results such as adding GM to
+    a "Compare Tesla and Ford" query.
     """
     try:
         response = client.chat.completions.create(
@@ -154,16 +156,46 @@ def extract_tickers_from_query(query: str) -> list[str]:
         # COMMON_TICKER_FIXES above) before dedup/cap, so a fixed ticker
         # that duplicates another extracted ticker still gets deduped.
         tickers = [COMMON_TICKER_FIXES.get(t, t) for t in tickers]
-        # De-duplicate while preserving order, cap at MAX_TICKERS
+        # De-duplicate while preserving order (cap applied by callers)
         seen = set()
         deduped = []
         for t in tickers:
             if t not in seen:
                 seen.add(t)
                 deduped.append(t)
-        return deduped[:MAX_TICKERS]
+        return deduped
     except Exception:
         return []
+
+
+def extract_tickers_from_query(query: str) -> list[str]:
+    """
+    Use a zero-temperature LLM call to extract up to MAX_TICKERS stock
+    tickers from the user's natural language query. Returns a list of
+    uppercase ticker strings (e.g. ['AAPL', 'MSFT']), or [] if none found.
+
+    Kept as a simple, backward-compatible entry point. Callers that need to
+    know whether the user actually mentioned more companies than the app
+    supports (to surface that to the user, rather than silently dropping
+    them) should use extract_tickers_with_truncation_info() instead.
+    """
+    return _extract_all_tickers(query)[:MAX_TICKERS]
+
+
+def extract_tickers_with_truncation_info(query: str) -> tuple[list[str], bool]:
+    """
+    Same extraction as extract_tickers_from_query(), but also reports
+    whether the query mentioned more companies than MAX_TICKERS supports.
+
+    Returns (tickers, was_truncated) where tickers is capped at MAX_TICKERS
+    and was_truncated is True if additional companies had to be dropped.
+    This lets the UI tell the user "only comparing the first 3" instead of
+    silently discarding a company — which previously led the LLM to
+    fabricate a misleading explanation (e.g. claiming a company's data was
+    unavailable when it was simply never requested).
+    """
+    all_tickers = _extract_all_tickers(query)
+    return all_tickers[:MAX_TICKERS], len(all_tickers) > MAX_TICKERS
 
 
 def build_prompt(stock_data, user_query: str) -> list[dict]:
@@ -176,12 +208,21 @@ def build_prompt(stock_data, user_query: str) -> list[dict]:
     """
     if isinstance(stock_data, list):
         data_context = build_comparative_context(stock_data)
+        present_names = ", ".join(f"{d.get('ticker')} ({d.get('name', '')})" for d in stock_data)
         instruction = (
+            "CRITICAL RULE, follow this before anything else below: the user's question "
+            "may name more companies than are present in the DATA block below (the app "
+            "only supports comparing a limited number at a time, and the UI already tells "
+            "the user this separately). Your answer must ONLY discuss the companies that "
+            "are actually present in the DATA block — do not name, mention, or reference "
+            "any other company from the question in any way, not even to note it is "
+            f"missing, unavailable, or excluded. The companies present in the data are: "
+            f"{present_names}. Treat the question as if it had only asked about these.\n\n"
             "You are a financial advisor assistant. Your role is to help non-technical "
             "retail investors understand and compare stocks. "
             "You always base your analysis strictly on the retrieved financial data provided "
             "in the context block below — never invent numbers or cite data not present in the context. "
-            "When multiple companies are present, explicitly compare them across the metrics given "
+            "Explicitly compare the companies across the metrics given "
             "(valuation, growth, risk) rather than describing each one in isolation. "
             "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
             "Keep responses concise and structured.\n\n"
