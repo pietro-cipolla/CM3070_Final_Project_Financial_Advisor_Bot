@@ -61,6 +61,28 @@ def get_stock_summary(ticker: str) -> dict:
         return {"error": str(e)}
 
 
+def get_price_history(ticker: str, period: str = "3mo"):
+    """
+    Fetch historical daily price data for charting, with a 20-day moving
+    average column (MA20) precomputed for the UI's Plotly chart
+    (Iteration 2).
+
+    Returns a pandas DataFrame (yfinance's own format, indexed by date,
+    with an added "MA20" column) on success, or None on any failure —
+    invalid ticker, no data, network error — so a charting problem never
+    blocks the rest of the response; the UI simply omits the chart.
+    """
+    try:
+        stock = yf.Ticker(ticker.upper())
+        hist = stock.history(period=period)
+        if hist is None or hist.empty:
+            return None
+        hist["MA20"] = hist["Close"].rolling(window=20, min_periods=1).mean()
+        return hist
+    except Exception:
+        return None
+
+
 def get_multiple_stock_summaries(tickers: list[str]) -> list[dict]:
     """
     Fetch stock summaries for up to MAX_TICKERS tickers.
