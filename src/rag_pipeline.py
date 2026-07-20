@@ -198,13 +198,20 @@ def extract_tickers_with_truncation_info(query: str) -> tuple[list[str], bool]:
     return all_tickers[:MAX_TICKERS], len(all_tickers) > MAX_TICKERS
 
 
-def build_prompt(stock_data, user_query: str) -> list[dict]:
+def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[dict]:
     """
     Construct the message list for the OpenAI Chat API.
 
     Accepts either a single stock_data dict (single-ticker path, kept for
     backward compatibility) or a list of stock_data dicts (multi-ticker
     comparative path), and builds the appropriate context block.
+
+    Iteration 2: an optional news_context string (built by
+    news_data.build_news_context) can be appended after the financial data
+    block, so NewsAPI headlines are available to the model as grounding
+    context alongside the yfinance-derived figures. Defaults to "" so
+    existing callers (and Iteration 1 tests) that don't pass it are
+    unaffected.
     """
     if isinstance(stock_data, list):
         data_context = build_comparative_context(stock_data)
@@ -238,7 +245,7 @@ def build_prompt(stock_data, user_query: str) -> list[dict]:
             "Keep responses concise and structured.\n\n"
         )
 
-    system_prompt = f"{instruction}{data_context}"
+    system_prompt = f"{instruction}{data_context}{news_context}"
 
     return [
         {"role": "system", "content": system_prompt},
