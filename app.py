@@ -1,16 +1,21 @@
 """
 Financial Advisor Bot — Feature Prototype
-Iteration 1: adds query intent classification, a clarification flow for
-open-ended/unclear queries, and multi-ticker (up to 3) comparative retrieval.
+Iteration 2: migrates the UI to the wide/sidebar "FULL" layout, adds a
+Plotly price chart with a 20-day moving average (MA20) for single-ticker
+queries, and adds real news headlines via NewsAPI (replacing the more
+limited yfinance-bundled headlines used in Iteration 1).
 """
 
 from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
-from src.financial_data import get_stock_summary, get_multiple_stock_summaries
+import plotly.graph_objects as go
+
+from src.financial_data import get_stock_summary, get_multiple_stock_summaries, get_price_history
 from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
+from src.news_data import get_news_for_company, build_news_context
 
 
 def escape_dollars(text: str) -> str:
@@ -30,10 +35,62 @@ def escape_dollars(text: str) -> str:
     return text.replace("$", "&#36;")
 
 
+def render_price_chart(ticker: str) -> None:
+    """
+    Render a Plotly line chart of closing price + 20-day moving average
+    (MA20) for the last 3 months. Silently renders nothing if history could
+    not be retrieved, so a charting failure never blocks the rest of the
+    response.
+    """
+    hist = get_price_history(ticker)
+    if hist is None or hist.empty:
+        return
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], name="Close price", mode="lines"))
+    fig.add_trace(go.Scatter(x=hist.index, y=hist["MA20"], name="20-day MA", mode="lines",
+                              line=dict(dash="dash")))
+    fig.update_layout(
+        title=f"{ticker} — last 3 months",
+        height=320,
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_news(news_items: list[dict], ticker: str) -> None:
+    """Render a small news headlines section with clickable source links."""
+    if not news_items:
+        return
+    st.markdown(f"**📰 Recent news — {ticker}**")
+    for item in news_items:
+        date = item["published_at"][:10] if item.get("published_at") else ""
+        st.markdown(f"- [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
+
+
 # ── Page config ──────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈")
+st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈", layout="wide")
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.title("📈 Financial Advisor Bot")
+    st.caption(
+        "Ask a question about one or more publicly traded stocks (up to 3). "
+        "Data from Yahoo Finance, news from NewsAPI, analysis from an LLM."
+    )
+    st.divider()
+    if st.button("🗑️ Clear conversation"):
+        st.session_state.messages = []
+        st.rerun()
+    st.divider()
+    st.caption(
+        "⚠️ This tool is for educational purposes only and does not "
+        "constitute financial advice. Always consult a qualified financial "
+        "advisor before making investment decisions."
+    )
+
 st.title("📈 Financial Advisor Bot")
-st.caption("Ask a question about one or more publicly traded stocks (up to 3).")
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
@@ -119,7 +176,16 @@ if user_query:
                                 st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
                             st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
 
-                        messages = build_prompt(stock_data, user_query)
+                            render_price_chart(tickers[0])
+
+                        with st.spinner("Fetching recent news..."):
+                            news_items = get_news_for_company(stock_data.get("name"), tickers[0])
+                        if news_items:
+                            with st.expander(f"📰 Recent news — {tickers[0]}", expanded=False):
+                                render_news(news_items, tickers[0])
+                        news_context = build_news_context(news_items)
+
+                        messages = build_prompt(stock_data, user_query, news_context=news_context)
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
 
@@ -149,16 +215,18 @@ if user_query:
                         )
                         st.write(response)
                     else:
-                        messages = build_prompt(stock_data_list, user_query)
+                        all_news_items = []
+                        with st.spinner("Fetching recent news..."):
+                            for stock_data in valid:
+                                items = get_news_for_company(stock_data.get("name"), stock_data["ticker"])
+                                all_news_items.extend(items)
+                                if items:
+                                    with st.expander(f"📰 Recent news — {stock_data['ticker']}", expanded=False):
+                                        render_news(items, stock_data["ticker"])
+                        news_context = build_news_context(all_news_items)
+
+                        messages = build_prompt(stock_data_list, user_query, news_context=news_context)
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
-
-# ── Footer ────────────────────────────────────────────────────────────────────
-st.divider()
-st.caption(
-    "⚠️ This tool is for educational purposes only and does not constitute "
-    "financial advice. Always consult a qualified financial advisor before "
-    "making investment decisions."
-)
