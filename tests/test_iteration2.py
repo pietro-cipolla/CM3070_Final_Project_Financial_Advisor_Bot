@@ -4,8 +4,7 @@ Iteration 2 unit tests — NewsAPI integration and price-history charting.
 NewsAPI HTTP calls and yfinance calls are mocked: these are unit tests of
 our own parsing/formatting/error-handling logic, not of the external
 services themselves, and must run without a real API key, real network
-access, or a real OpenAI key (the marker will not run the code with API
-keys provided).
+access, or a real OpenAI key.
 
 Run with:  pytest tests/test_iteration2.py -v
 """
