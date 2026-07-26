@@ -60,10 +60,15 @@ def render_price_chart(ticker: str) -> None:
 
 
 def render_news(news_items: list[dict], ticker: str) -> None:
-    """Render a small news headlines section with clickable source links."""
+    """
+    Render a small news headlines list with clickable source links.
+
+    Does not render its own "Recent news" title: callers wrap this in an
+    st.expander(f"... — {ticker}") that already carries that heading, and
+    printing it again here produced a visibly duplicated title in the UI.
+    """
     if not news_items:
         return
-    st.markdown(f"**📰 Recent news — {ticker}**")
     for item in news_items:
         date = item["published_at"][:10] if item.get("published_at") else ""
         st.markdown(f"- [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
