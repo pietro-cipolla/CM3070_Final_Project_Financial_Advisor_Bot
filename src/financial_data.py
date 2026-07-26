@@ -110,8 +110,17 @@ def build_data_context(stock_data: dict) -> str:
             f"  - {h}" for h in stock_data["news_headlines"]
         )
 
+    # NOTE: as of the yfinance version pinned for this project (>=0.2.55),
+    # `info["dividendYield"]` is already returned in percentage-point form
+    # (e.g. 0.34 meaning 0.34%), not as a fraction of 1 (0.0034). Multiplying
+    # by 100 here — the original assumption, matching yfinance's older
+    # behavior — silently inflated every dividend yield by 100x (e.g. AAPL
+    # showed as 34.0% instead of the real ~0.34%, confirmed against Google
+    # Finance). yfinance does not version this field's format, so if a
+    # future yfinance upgrade reverts to fractional form this will need
+    # revisiting — see Diario Tecnico.
     dividend = (
-        f"{round(stock_data['dividend_yield'] * 100, 2)}%"
+        f"{round(stock_data['dividend_yield'], 2)}%"
         if stock_data.get("dividend_yield")
         else "None"
     )
