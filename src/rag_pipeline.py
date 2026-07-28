@@ -47,12 +47,25 @@ def classify_query_intent(query: str) -> str:
 
       - "stock_query":  the query names or clearly implies specific
                          company/companies (e.g. "What is Tesla's P/E?",
-                         "Compare AAPL and MSFT").
+                         "Compare AAPL and MSFT", or a product/brand name
+                         that unambiguously points to one company, e.g.
+                         "Should I buy an iPhone maker?" -> Apple).
       - "open_ended":    the query asks for general investment advice
-                         without naming a specific stock (e.g. "What should
-                         I invest in?", "Is now a good time to buy stocks?").
+                         without naming or implying a specific stock (e.g.
+                         "What should I invest in?", "Is now a good time to
+                         buy stocks?").
       - "unclear":       the query is off-topic, empty of financial meaning,
                          or too ambiguous to act on.
+
+    Note (fix, see Diario Tecnico): this prompt must recognize product/brand
+    references the same way the ticker extractor's prompt does (see
+    _extract_all_tickers below). An earlier version only mentioned "clearly
+    implies" without an example, and in practice the model classified
+    product-reference queries like "Should I buy an iPhone maker?" as
+    open_ended instead of stock_query — which routed them to a generic
+    clarification message and never gave the ticker extractor (which DOES
+    know "iPhone" implies Apple) a chance to run at all. The explicit
+    example below keeps the two prompts' behavior consistent.
 
     Defaults to "stock_query" on classification failure, so a downstream
     ticker-extraction miss (rather than a silent misclassification) is what
@@ -70,8 +83,15 @@ def classify_query_intent(query: str) -> str:
                     "content": (
                         "Classify the user's financial query into exactly one label: "
                         "stock_query, open_ended, or unclear.\n"
-                        "- stock_query: names or clearly implies one or more specific companies/tickers.\n"
-                        "- open_ended: asks for general investing advice with no specific company named.\n"
+                        "- stock_query: names or clearly implies one or more specific "
+                        "companies/tickers. This includes an unambiguous product or "
+                        "brand reference that points to one company, even if the "
+                        "company itself is never named (e.g. 'Should I buy an iPhone "
+                        "maker?' implies Apple; 'Is the Windows maker a good buy?' "
+                        "implies Microsoft) — classify these as stock_query, not "
+                        "open_ended.\n"
+                        "- open_ended: asks for general investing advice with no "
+                        "specific company named OR implied.\n"
                         "- unclear: off-topic, empty, or too ambiguous to act on.\n"
                         "Reply with ONLY the label, nothing else."
                     ),
