@@ -108,12 +108,23 @@ def _extract_all_tickers(query: str) -> list[str]:
     to add extra competitors or "for comparison" companies that were never
     mentioned, since that produced unrequested results such as adding GM to
     a "Compare Tesla and Ford" query.
+
+    IMPORTANT: the extraction prompt below must NOT itself cap the result at
+    MAX_TICKERS. An earlier version told the model to extract "up to a
+    maximum of 3", which made the model self-truncate during extraction —
+    so this function never actually returned more than 3 tickers, even when
+    the user named 4+ companies. That silently broke the truncation
+    notice: extract_tickers_with_truncation_info() detects truncation by
+    checking len(all_tickers) > MAX_TICKERS on THIS function's output, so if
+    the model already capped it at 3, that check can never fire and the
+    user is never told a company was dropped (see Diario Tecnico). The cap
+    must be applied once, downstream, by the callers below — never here.
     """
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
-            max_tokens=20,
+            max_tokens=40,
             messages=[
                 {
                     "role": "system",
@@ -124,9 +135,13 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "query itself (e.g. a product name like 'iPhone' clearly "
                         "implies Apple). Do NOT add competitors, related companies, or "
                         "any other company for context or comparison purposes — extract "
-                        "only what the user actually mentioned, up to a maximum of 3. "
-                        "If you find fewer than 3 companies, return only the ones you "
-                        "found — never pad the list with a placeholder. "
+                        "every company the user actually mentioned, with NO upper limit "
+                        "on how many you return (a separate step outside your control "
+                        "handles any limit on how many are compared at once, and needs "
+                        "to know the true full count, so do not cap or truncate your "
+                        "answer yourself). "
+                        "If you find no companies at all, return NONE — never pad the "
+                        "list with a placeholder. "
                         "Always use the REAL stock exchange ticker symbol, never the "
                         "company name written in capital letters. For example: Ford "
                         "Motor Company's ticker is F, not FORD; Alphabet/Google's "
