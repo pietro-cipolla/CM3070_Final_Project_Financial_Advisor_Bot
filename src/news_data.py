@@ -17,9 +17,20 @@ run the code with live API keys.
 import os
 import re
 import requests
+from openai import OpenAI
 
 NEWSAPI_BASE_URL = "https://newsapi.org/v2/everything"
 NEWSAPI_TIMEOUT = 8  # seconds
+
+# Separate OpenAI client instance, kept local to this module rather than
+# imported from rag_pipeline.py, so news_data.py stays a self-contained
+# layer (per its module docstring) with no dependency on the RAG layer.
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# How many candidate articles to fetch from NewsAPI before the relevance
+# filter below narrows them down to max_articles. Needs headroom because
+# some candidates will be filtered out as off-topic.
+_CANDIDATE_MULTIPLIER = 3
 
 # Legal-entity suffixes that yfinance's `longName` includes but real news
 # headlines almost never spell out verbatim (an article says "Ford", not
@@ -31,18 +42,16 @@ _SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Small, evidence-based denylist (NOT a broad allowlist — an allowlist of
-# financial-news domains was tried first and reverted: it filtered out
-# clearly relevant results from legitimate sources not on the list, such as
-# PRNewswire, GlobeNewswire and trade press like WWD). Exact-phrase qInTitle
-# matching (below) already fixes the "matches a random unrelated company"
-# failure mode. What it can't fix is a short company name that is ALSO a
-# common word/brand outside finance: "Ford" is used constantly in
-# classic-car enthusiast headlines, unrelated to Ford stock. Each domain
-# below was observed during manual testing to produce exclusively this kind
-# of off-topic-but-title-matching result, never a genuine business/product
-# article — see Diario Tecnico for the specific examples (e.g. "1974 Ford
-# Bronco Sport 302" on bringatrailer.com).
+# Small, evidence-based denylist (NOT a broad allowlist — see the note in
+# get_news_for_company about why an allowlist was tried and reverted).
+# Exact-phrase qInTitle matching (below) already fixed the "matches a
+# random unrelated company" failure mode. What it can't fix is a short
+# company name that is ALSO a common word/brand outside finance: "Ford" is
+# used constantly in classic-car enthusiast headlines, unrelated to Ford
+# stock. Each domain below was observed during manual testing to produce
+# exclusively this kind of off-topic-but-title-matching result, never a
+# genuine business/product article — see Diario Tecnico for the specific
+# examples (e.g. "1974 Ford Bronco Sport 302" on bringatrailer.com).
 EXCLUDED_NOISE_DOMAINS = ",".join([
     "bringatrailer.com",   # classic/collector car auction listings
     "slickdeals.net",      # consumer deals/coupons, not company news
@@ -69,6 +78,86 @@ def _search_phrase(name: str) -> str:
     return name
 
 
+def _filter_relevant_articles(articles: list[dict], company_label: str) -> list[dict]:
+    """
+    Narrow a list of candidate articles (already title-matched by NewsAPI)
+    down to the ones actually ABOUT the company as a business — not just
+    ones where the company name happens to appear in the headline.
+
+    Why this exists (see Diario Tecnico / get_news_for_company docstring):
+    domain-based filtering (allowlist, then denylist) hits a wall that no
+    list of sites can fix — a short company name can collide with an
+    unrelated everyday use of the same word on ANY site ("Ford" in
+    classic-car auction listings, "Coty" as an unrelated awards acronym).
+    That's a problem about the article's TOPIC, not its SOURCE, so this
+    filters on content instead: one LLM call judges the whole candidate
+    batch at once (cheap, same model already used for ticker extraction
+    and intent classification elsewhere in this file's sibling module).
+
+    Fails open, not closed: if the classification call itself fails for any
+    reason, this returns the candidates unfiltered rather than dropping
+    them, since showing untrimmed-but-fetched results is strictly better
+    than showing none due to an unrelated API hiccup — consistent with the
+    "a news outage never blocks the rest of the response" design used
+    throughout this module.
+    """
+    if not articles:
+        return articles
+
+    numbered = "\n".join(f"{i+1}. {a['title']}" for i, a in enumerate(articles))
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=30,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Below is a numbered list of news headlines that matched a "
+                        "text search for the company name, but the search cannot tell "
+                        "whether each headline is actually ABOUT that company as a "
+                        "business (its stock, products, earnings, leadership, deals, "
+                        "controversies, etc.) versus an unrelated use of the same word "
+                        "or a different entity that happens to share the name. Exclude, "
+                        "in particular: a classic-car listing for a brand name; an "
+                        "unrelated award whose acronym matches the company name; a "
+                        "different person or place with the same name; and a headline "
+                        "about something else entirely (sports, entertainment, unrelated "
+                        "products, etc.) where the company name only appears as an "
+                        "incidental sponsor/advertiser credit line, such as '... "
+                        "Presented By Your Local Ford Dealers' on a sports article — "
+                        "that is an ad tag, not news about the company. "
+                        "Reply with ONLY a comma-separated list of the item numbers "
+                        "that ARE genuinely about the company as a business, in the "
+                        "original order, nothing else. If none qualify, reply NONE."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Company: {company_label}\n\nHeadlines:\n{numbered}",
+                },
+            ],
+        )
+        result = response.choices[0].message.content.strip().upper()
+        if result == "NONE" or not result:
+            return []
+        keep_indices = set()
+        for tok in result.split(","):
+            tok = tok.strip()
+            if tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(articles):
+                    keep_indices.add(idx)
+        # Fail open on a malformed/empty reply (e.g. the model replied with
+        # prose instead of numbers) rather than silently returning nothing.
+        if not keep_indices and result != "NONE":
+            return articles
+        return [a for i, a in enumerate(articles) if i in keep_indices]
+    except Exception:
+        return articles
+
+
 def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) -> list[dict]:
     """
     Fetch recent news headlines mentioning the given company.
@@ -78,21 +167,40 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     returns more relevant results for a company name than for a bare ticker
     symbol (e.g. "Apple Inc." vs "AAPL").
 
-    Precision measures keep results on-topic. A plain q=<company name>
-    search against the "everything" endpoint, unquoted, matches each word in
-    the name independently, anywhere in the article's full body. For a
-    single common word like "Apple" this pulls in unrelated results
-    (recipes, fruit-growing). For multi-word legal names like "Tesla, Inc."
-    or "Ford Motor Company" it is much worse: words like "Inc" or "Company"
-    are common enough in *any* corporate press release that a search for
-    "Tesla, Inc." returned wire-service articles about entirely unrelated
-    companies (confirmed in manual testing — see Diario Tecnico).
-
+    Precision measures keep results on-topic. Two earlier attempts were
+    tried and found insufficient during manual testing (see Diario Tecnico):
+      - Plain q=<company name>, unquoted: matches each word in the name
+        independently, anywhere in the article's full body. For a single
+        common word like "Apple" this pulls in unrelated results (recipes,
+        fruit-growing). For multi-word legal names like "Tesla, Inc." or
+        "Ford Motor Company" it is much worse: words like "Inc" or "Company"
+        are common enough in *any* corporate press release that a search
+        for "Tesla, Inc." returned wire-service articles about entirely
+        unrelated companies.
+      - Adding a fixed allowlist of financial-news domains on top of
+        `qInTitle`: this filtered out clearly relevant, on-topic results
+        from legitimate sources not on the list (PRNewswire, GlobeNewswire,
+        trade press like WWD) — too aggressive, discarding good results
+        along with the bad.
     Current approach: `qInTitle` with the company name reduced to its short,
     headline-form name (see _search_phrase — "Ford", not "Ford Motor
-    Company") and wrapped in double quotes for an EXACT PHRASE match, plus
-    `excludeDomains` to drop a small set of sources observed to produce
-    off-topic name-collision results (see EXCLUDED_NOISE_DOMAINS above).
+    Company") and wrapped in double quotes for an EXACT PHRASE match. This
+    requires the literal short name to appear in the headline, which is
+    both narrow enough to exclude generic-word false positives and broad
+    enough to keep results from any legitimate outlet NewsAPI indexes.
+
+    This alone does not (and structurally cannot, without a dedicated
+    financial-news API or real entity disambiguation) solve every case: a
+    short company name can coincide with an unrelated common use of the
+    same word — "Ford" in classic-car enthusiast headlines, "Coty" as a
+    "Coach/Citizen Of The Year" award acronym. Two more layers handle that,
+    applied in order: `excludeDomains` (see EXCLUDED_NOISE_DOMAINS above)
+    trims specific low-editorial-quality sources observed to produce this
+    kind of noise, cheaply and with no API cost; then _filter_relevant_
+    articles() makes one LLM call over the surviving candidates to judge
+    actual topical relevance, which is what generalizes to sources and
+    name collisions not seen during testing (domain lists, by definition,
+    only ever cover cases already observed).
 
     Returns a list of dicts: {"title", "source", "url", "published_at"}.
     Never raises — returns an empty list on any failure (missing API key,
@@ -108,13 +216,14 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
         return []
 
     query = _search_phrase(raw_query) or raw_query
+    company_label = raw_query  # full name for the relevance-filter prompt
 
     params = {
         "qInTitle": f'"{query}"',
         "excludeDomains": EXCLUDED_NOISE_DOMAINS,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": max_articles,
+        "pageSize": max_articles * _CANDIDATE_MULTIPLIER,
         "apiKey": api_key,
     }
 
@@ -130,17 +239,21 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     if resp.status_code != 200 or data.get("status") != "ok":
         return []
 
-    articles = data.get("articles", [])[:max_articles]
-    return [
+    candidates = [
         {
             "title": a.get("title", "").strip(),
             "source": (a.get("source") or {}).get("name") or "Unknown",
             "url": a.get("url", ""),
             "published_at": a.get("publishedAt", ""),
         }
-        for a in articles
+        for a in data.get("articles", [])
         if a.get("title") and a.get("title") != "[Removed]"
     ]
+    if not candidates:
+        return []
+
+    relevant = _filter_relevant_articles(candidates, company_label)
+    return relevant[:max_articles]
 
 
 def build_news_context(news_items: list[dict]) -> str:
