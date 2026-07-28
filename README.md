@@ -21,8 +21,8 @@ This repository tracks the incremental development of the system across Phase 2 
 |---|---|---|
 | 0 - Baseline | Simple prototype from preliminary report | ✅ Done |
 | 1 - Multi-ticker + Intent detection | Handle multi-stock queries and open-ended questions | ✅ Done |
-| 2 - NewsAPI + Visualisation | Real-time news and interactive price charts | ✅ Current |
-| 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ⬜ Planned |
+| 2 - NewsAPI + Visualisation | Real-time news and interactive price charts | ✅ Done |
+| 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ✅ Current |
 | 4 - Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ⬜ Planned |
 | 5 - User testing | 5-participant study, 20-query evaluation | ⬜ Planned |
 | 6 - Final polish | Documentation, refactoring, submission prep | ⬜ Planned |
@@ -119,4 +119,4 @@ The bot will retrieve live data from Yahoo Finance and provide an analysis groun
 
 ## Academic context
 
-This project is submitted as part of the CM3070 Final Project module, BSc Computer Science, University of London. The RAG-based approach was chosen over classical reinforcement learning for financial advisory, as it provides more reliable, data-grounded responses with lower infrastructure requirements, a design decision documented and justified in the project report.
+This project is submitted as part of the CM3070 Final Project module, BSc Computer Science, University of London. The RAG-based approach was chosen over classical reinforcement learning for financial advisory, as it provides more reliable, data-grounded responses with lower infrastructure requirements.
