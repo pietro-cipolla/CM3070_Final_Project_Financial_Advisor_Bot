@@ -1,13 +1,5 @@
 """
 Iteration 2 unit tests — NewsAPI integration and price-history charting.
-
-NewsAPI HTTP calls and yfinance calls are mocked: these are unit tests of
-our own parsing/formatting/error-handling logic, not of the external
-services themselves, and must run without a real API key, real network
-access, or a real OpenAI key (the marker will not run the code with API
-keys provided).
-
-Run with:  pytest tests/test_iteration2.py -v
 """
 
 import os
@@ -131,10 +123,6 @@ def test_get_news_respects_max_articles(monkeypatch):
     assert len(result) == 2
 
 
-# ── _filter_relevant_articles (topical relevance filter, fix for off-topic ──────
-# ── name-collision results like classic-car "Ford" listings — see          ──────
-# ── Diario Tecnico) ───────────────────────────────────────────────────────────
-
 def _fake_articles(n: int) -> list[dict]:
     return [
         {"title": f"Headline {i+1}", "source": "Src", "url": "https://x.com", "published_at": "2026-07-14T00:00:00Z"}
@@ -160,7 +148,7 @@ def test_filter_relevant_articles_none_keeps_nothing():
 def test_filter_relevant_articles_fails_open_on_exception():
     """
     If the classification call itself fails, return the candidates
-    unfiltered rather than dropping them — a filtering hiccup must not
+    unfiltered rather than dropping them, a filtering hiccup must not
     silently erase news that was already successfully fetched.
     """
     articles = _fake_articles(2)
@@ -184,7 +172,7 @@ def test_filter_relevant_articles_empty_input_returns_empty():
     mock_create.assert_not_called()
 
 
-# ── build_news_context ──────────────────────────────────────────────────────────
+# build_news_context
 
 def test_build_news_context_empty_when_no_items():
     assert build_news_context([]) == ""
@@ -198,7 +186,7 @@ def test_build_news_context_formats_items():
     assert "2026-07-14" in context
 
 
-# ── get_price_history ────────────────────────────────────────────────────────
+# get_price_history
 
 def _mock_ticker_with_history(history_df):
     mock_ticker = MagicMock()
@@ -225,7 +213,7 @@ def test_get_price_history_returns_none_on_exception():
         assert get_price_history("AAPL") is None
 
 
-# ── build_prompt with news_context ──────────────────────────────────────────────
+# build_prompt with news_context
 
 def test_build_prompt_appends_news_context_when_provided():
     stock_data = {
