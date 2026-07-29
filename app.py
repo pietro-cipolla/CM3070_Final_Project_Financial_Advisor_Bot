@@ -22,11 +22,10 @@ def escape_dollars(text: str) -> str:
     """
     Streamlit's markdown renderer treats a pair of '$' as LaTeX math
     delimiters. LLM responses routinely mention two or more dollar amounts
-    in the same paragraph (e.g. "target price of $423.40 ... current price
-    of $419.77"), which Streamlit then renders as a single garbled math
+    in the same paragraph, which Streamlit then renders as a single garbled math
     block instead of plain text.
 
-    A backslash escape ("\\$") is NOT enough — Streamlit's math-detection
+    A backslash escape ("\\$") is not enough, Streamlit's math-detection
     still pairs up escaped dollar signs and swallows everything between
     them. Replacing '$' with the HTML entity '&#36;' sidesteps this: the
     raw '$' character never appears in the text Streamlit scans for math
@@ -74,7 +73,7 @@ def render_news(news_items: list[dict], ticker: str) -> None:
         st.markdown(f"- [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
 
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# Page config
 st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈", layout="wide")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -97,16 +96,16 @@ with st.sidebar:
 
 st.title("📈 Financial Advisor Bot")
 
-# ── Session state ─────────────────────────────────────────────────────────────
+# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ── Display conversation history ──────────────────────────────────────────────
+# Display conversation history 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# ── Chat input ────────────────────────────────────────────────────────────────
+# Chat input
 user_query = st.chat_input(
     "e.g. Should I buy Apple stock? Compare Tesla and Ford."
 )
