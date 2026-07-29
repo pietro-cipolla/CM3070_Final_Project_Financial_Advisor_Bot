@@ -27,9 +27,8 @@ VALID_INTENTS = {"stock_query", "open_ended", "unclear"}
 # out the company name in caps instead of the real exchange ticker (e.g.
 # "FORD" instead of "F", observed in manual testing). Prompt wording alone
 # did not fully prevent this, so common cases are corrected in code. This
-# is a stopgap, not a general solution — a proper fix would validate/
-# resolve tickers against a real symbol-lookup service (candidate for a
-# later iteration).
+# is a stopgap, not a general solution, a proper fix would validate/
+# resolve tickers against a real symbol-lookup service.
 COMMON_TICKER_FIXES = {
     "FORD": "F",
     "GOOGLE": "GOOGL",
@@ -57,19 +56,19 @@ def classify_query_intent(query: str) -> str:
       - "unclear":       the query is off-topic, empty of financial meaning,
                          or too ambiguous to act on.
 
-    Note (fix, see Diario Tecnico): this prompt must recognize product/brand
+    Note: this prompt must recognize product/brand
     references the same way the ticker extractor's prompt does (see
     _extract_all_tickers below). An earlier version only mentioned "clearly
     implies" without an example, and in practice the model classified
     product-reference queries like "Should I buy an iPhone maker?" as
-    open_ended instead of stock_query — which routed them to a generic
-    clarification message and never gave the ticker extractor (which DOES
+    open_ended instead of stock_query, which routed them to a generic
+    clarification message and never gave the ticker extractor (which does
     know "iPhone" implies Apple) a chance to run at all. The explicit
     example below keeps the two prompts' behavior consistent.
 
     Defaults to "stock_query" on classification failure, so a downstream
     ticker-extraction miss (rather than a silent misclassification) is what
-    surfaces to the user — this keeps failures visible instead of masking
+    surfaces to the user, this keeps failures visible instead of masking
     them behind a generic clarification message.
     """
     try:
@@ -118,13 +117,13 @@ def extract_ticker_from_query(query: str) -> str | None:
 def _extract_all_tickers(query: str) -> list[str]:
     """
     Internal helper: makes the single LLM call used by ticker extraction and
-    returns the FULL de-duplicated, corrected list of tickers found — before
+    returns the FULL de-duplicated, corrected list of tickers found, before
     the MAX_TICKERS cap is applied. Both extract_tickers_from_query() and
     extract_tickers_with_truncation_info() build on this so the LLM is only
     called once per query regardless of which public function is used.
 
     Only companies the user actually named (or unambiguously referenced,
-    e.g. by product name) are extracted — the model is explicitly told not
+    e.g. by product name) are extracted, the model is explicitly told not
     to add extra competitors or "for comparison" companies that were never
     mentioned, since that produced unrequested results such as adding GM to
     a "Compare Tesla and Ford" query.
@@ -133,12 +132,12 @@ def _extract_all_tickers(query: str) -> list[str]:
     MAX_TICKERS. An earlier version told the model to extract "up to a
     maximum of 3", which made the model self-truncate during extraction —
     so this function never actually returned more than 3 tickers, even when
-    the user named 4+ companies. That silently broke the truncation
+    the user named 4 or more companies. That silently broke the truncation
     notice: extract_tickers_with_truncation_info() detects truncation by
     checking len(all_tickers) > MAX_TICKERS on THIS function's output, so if
     the model already capped it at 3, that check can never fire and the
-    user is never told a company was dropped (see Diario Tecnico). The cap
-    must be applied once, downstream, by the callers below — never here.
+    user is never told a company was dropped. The cap
+    must be applied once, downstream, by the callers below, never here.
     """
     try:
         response = client.chat.completions.create(
@@ -181,17 +180,12 @@ def _extract_all_tickers(query: str) -> list[str]:
         if result == "NONE" or not result:
             return []
         tickers = [t.strip() for t in result.split(",") if t.strip()]
-        # Defensive filter: even with the prompt above, the model has been
-        # observed padding a short list with a stray "NONE" / ".NONE" token
-        # instead of just returning the real tickers it found. Drop anything
-        # that isn't a plausible ticker (must start with a letter and must
-        # not contain "NONE") rather than trusting the model's formatting.
         tickers = [t for t in tickers if t[:1].isalpha() and "NONE" not in t]
-        # Correct known company-name-instead-of-ticker mistakes (see
+        # Correct known company name instead of ticker mistakes (see
         # COMMON_TICKER_FIXES above) before dedup/cap, so a fixed ticker
         # that duplicates another extracted ticker still gets deduped.
         tickers = [COMMON_TICKER_FIXES.get(t, t) for t in tickers]
-        # De-duplicate while preserving order (cap applied by callers)
+        # De-duplicate while preserving order
         seen = set()
         deduped = []
         for t in tickers:
@@ -263,7 +257,7 @@ def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[di
             "You are a financial advisor assistant. Your role is to help non-technical "
             "retail investors understand and compare stocks. "
             "You always base your analysis strictly on the retrieved financial data provided "
-            "in the context block below — never invent numbers or cite data not present in the context. "
+            "in the context block below, never invent numbers or cite data not present in the context. "
             "Explicitly compare the companies across the metrics given "
             "(valuation, growth, risk) rather than describing each one in isolation. "
             "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
