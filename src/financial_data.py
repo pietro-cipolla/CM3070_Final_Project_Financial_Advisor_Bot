@@ -117,8 +117,7 @@ def build_data_context(stock_data: dict) -> str:
     # behavior — silently inflated every dividend yield by 100x (e.g. AAPL
     # showed as 34.0% instead of the real ~0.34%, confirmed against Google
     # Finance). yfinance does not version this field's format, so if a
-    # future yfinance upgrade reverts to fractional form this will need
-    # revisiting — see Diario Tecnico.
+    # future yfinance upgrade reverts to fractional form this will need revisiting.
     dividend = (
         f"{round(stock_data['dividend_yield'], 2)}%"
         if stock_data.get("dividend_yield")
