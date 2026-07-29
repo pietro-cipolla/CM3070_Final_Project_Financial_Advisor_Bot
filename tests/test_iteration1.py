@@ -1,11 +1,5 @@
 """
 Iteration 1 unit tests — multi-ticker extraction and query intent classification.
-
-All OpenAI calls are mocked: these are unit tests of our own parsing/decision
-logic, not of the LLM itself, and they must run without a real API key or
-network access (the marker will not run the code with API keys provided).
-
-Run with:  pytest tests/test_iteration1.py -v
 """
 
 from unittest.mock import patch, MagicMock
@@ -27,7 +21,7 @@ def _mock_completion(content: str) -> MagicMock:
     return mock_response
 
 
-# ── extract_tickers_from_query ────────────────────────────────────────────────
+# extract_tickers_from_query 
 
 def test_extract_tickers_single():
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL")):
@@ -73,7 +67,7 @@ def test_extract_tickers_corrects_company_name_instead_of_ticker():
         assert extract_tickers_from_query("Compare Tesla and Ford") == ["TSLA", "F"]
 
 
-# ── extract_tickers_with_truncation_info ──────────────────────────────────────
+# extract_tickers_with_truncation_info
 
 def test_truncation_info_flags_more_than_max_tickers():
     """
@@ -112,7 +106,7 @@ def test_truncation_info_single_llm_call_per_invocation():
 
 
 def test_extract_tickers_dedup_and_cap_at_three():
-    # 5 raw tickers with a duplicate — must dedupe AND cap at MAX_TICKERS (3)
+    # 5 raw tickers with a duplicate
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("AAPL,AAPL,MSFT,GOOGL,TSLA")):
         result = extract_tickers_from_query("Compare Apple, Microsoft, Google and Tesla")
         assert result == ["AAPL", "MSFT", "GOOGL"]
@@ -135,7 +129,7 @@ def test_extract_ticker_from_query_backward_compat_none():
         assert extract_ticker_from_query("hello there") is None
 
 
-# ── classify_query_intent ──────────────────────────────────────────────────────
+# classify_query_intent 
 
 def test_classify_intent_stock_query():
     with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("stock_query")):
@@ -168,7 +162,7 @@ def test_classify_intent_case_insensitive():
         assert classify_query_intent("Tell me about MSFT") == "stock_query"
 
 
-# ── build_prompt dispatch (single vs. multi-ticker) ───────────────────────────
+# build_prompt dispatch (single vs. multi-ticker)
 
 def test_build_prompt_single_ticker_dict():
     stock_data = {
