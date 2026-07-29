@@ -3,8 +3,7 @@ financial_data.py
 Data Retrieval layer — fetches stock data from Yahoo Finance via yfinance.
 
 Iteration 1: adds multi-ticker retrieval and a comparative context block
-so the RAG pipeline can answer questions that mention more than one company
-(e.g. "Compare Apple and Microsoft").
+so the RAG pipeline can answer questions that mention more than one company.
 """
 
 import yfinance as yf
@@ -67,10 +66,9 @@ def get_price_history(ticker: str, period: str = "3mo"):
     average column (MA20) precomputed for the UI's Plotly chart
     (Iteration 2).
 
-    Returns a pandas DataFrame (yfinance's own format, indexed by date,
-    with an added "MA20" column) on success, or None on any failure —
-    invalid ticker, no data, network error — so a charting problem never
-    blocks the rest of the response; the UI simply omits the chart.
+    Returns a pandas DataFrame on success, or None on any failure,
+    invalid ticker, no data, network error, so a charting problem never
+    blocks the rest of the response; the UI omits the chart.
     """
     try:
         stock = yf.Ticker(ticker.upper())
@@ -109,15 +107,7 @@ def build_data_context(stock_data: dict) -> str:
         headlines_text = "\nRecent news:\n" + "\n".join(
             f"  - {h}" for h in stock_data["news_headlines"]
         )
-
-    # NOTE: as of the yfinance version pinned for this project (>=0.2.55),
-    # `info["dividendYield"]` is already returned in percentage-point form
-    # (e.g. 0.34 meaning 0.34%), not as a fraction of 1 (0.0034). Multiplying
-    # by 100 here — the original assumption, matching yfinance's older
-    # behavior — silently inflated every dividend yield by 100x (e.g. AAPL
-    # showed as 34.0% instead of the real ~0.34%, confirmed against Google
-    # Finance). yfinance does not version this field's format, so if a
-    # future yfinance upgrade reverts to fractional form this will need revisiting.
+        
     dividend = (
         f"{round(stock_data['dividend_yield'], 2)}%"
         if stock_data.get("dividend_yield")
