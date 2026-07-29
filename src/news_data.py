@@ -9,9 +9,8 @@ gives a dedicated, keyword-searchable news feed, so headlines here are
 sourced from NewsAPI instead.
 
 Uses the free "Developer" tier (https://newsapi.org/pricing): 100 requests/
-day, articles up to 1 month old with a ~24h publication delay, development/
-testing use only. That is a good fit for this project, since markers do not
-run the code with live API keys.
+day, articles up to 1 month old with a 24h publication delay, development/
+testing use only. That is a good fit for this project.
 """
 
 import os
@@ -24,7 +23,7 @@ NEWSAPI_TIMEOUT = 8  # seconds
 
 # Separate OpenAI client instance, kept local to this module rather than
 # imported from rag_pipeline.py, so news_data.py stays a self-contained
-# layer (per its module docstring) with no dependency on the RAG layer.
+# layer with no dependency on the RAG layer.
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # How many candidate articles to fetch from NewsAPI before the relevance
@@ -35,23 +34,13 @@ _CANDIDATE_MULTIPLIER = 3
 # Legal-entity suffixes that yfinance's `longName` includes but real news
 # headlines almost never spell out verbatim (an article says "Ford", not
 # "Ford Motor Company"; "Coca-Cola", not "The Coca-Cola Company"). Stripped
-# before building the exact-phrase search below — see _search_phrase().
+# before building the exact-phrase search below, see _search_phrase().
 _SUFFIX_RE = re.compile(
     r"[,]?\s+(Inc\.?|Corp\.?|Corporation|Co\.?|Company|Ltd\.?|Limited|PLC|"
     r"Holdings|Motor Company|Group)\s*$",
     re.IGNORECASE,
 )
 
-# Small, evidence-based denylist (NOT a broad allowlist — see the note in
-# get_news_for_company about why an allowlist was tried and reverted).
-# Exact-phrase qInTitle matching (below) already fixed the "matches a
-# random unrelated company" failure mode. What it can't fix is a short
-# company name that is ALSO a common word/brand outside finance: "Ford" is
-# used constantly in classic-car enthusiast headlines, unrelated to Ford
-# stock. Each domain below was observed during manual testing to produce
-# exclusively this kind of off-topic-but-title-matching result, never a
-# genuine business/product article — see Diario Tecnico for the specific
-# examples (e.g. "1974 Ford Bronco Sport 302" on bringatrailer.com).
 EXCLUDED_NOISE_DOMAINS = ",".join([
     "bringatrailer.com",   # classic/collector car auction listings
     "slickdeals.net",      # consumer deals/coupons, not company news
@@ -65,9 +54,7 @@ def _search_phrase(name: str) -> str:
     Turn a yfinance company name (e.g. "Ford Motor Company") into the short
     form actually used in news headlines (e.g. "Ford"), by stripping trailing
     legal-entity suffixes and a leading "The ". Applied in a loop since a
-    name can have more than one trailing clause to strip (e.g. "X Inc.,
-    a Delaware Corporation" — not expected from yfinance in practice, but
-    cheap to handle defensively).
+    name can have more than one trailing clause to strip.
     """
     prev = None
     while prev != name:
@@ -81,23 +68,20 @@ def _search_phrase(name: str) -> str:
 def _filter_relevant_articles(articles: list[dict], company_label: str) -> list[dict]:
     """
     Narrow a list of candidate articles (already title-matched by NewsAPI)
-    down to the ones actually ABOUT the company as a business — not just
+    down to the ones actually ABOUT the company as a business, not just
     ones where the company name happens to appear in the headline.
 
-    Why this exists (see Diario Tecnico / get_news_for_company docstring):
-    domain-based filtering (allowlist, then denylist) hits a wall that no
-    list of sites can fix — a short company name can collide with an
-    unrelated everyday use of the same word on ANY site ("Ford" in
-    classic-car auction listings, "Coty" as an unrelated awards acronym).
+    Why this exists: domain-based filtering (allowlist, then denylist) hits a wall that no
+    list of sites can fix, a short company name can collide with an
+    unrelated everyday use of the same word on ANY site.
     That's a problem about the article's TOPIC, not its SOURCE, so this
     filters on content instead: one LLM call judges the whole candidate
-    batch at once (cheap, same model already used for ticker extraction
-    and intent classification elsewhere in this file's sibling module).
+    batch at once.
 
     Fails open, not closed: if the classification call itself fails for any
     reason, this returns the candidates unfiltered rather than dropping
     them, since showing untrimmed-but-fetched results is strictly better
-    than showing none due to an unrelated API hiccup — consistent with the
+    than showing none due to an unrelated API hiccup, consistent with the
     "a news outage never blocks the rest of the response" design used
     throughout this module.
     """
@@ -118,7 +102,7 @@ def _filter_relevant_articles(articles: list[dict], company_label: str) -> list[
                         "text search for the company name, but the search cannot tell "
                         "whether each headline is actually ABOUT that company as a "
                         "business (its stock, products, earnings, leadership, deals, "
-                        "controversies, etc.) versus an unrelated use of the same word "
+                        "controversies, etc.) vs an unrelated use of the same word "
                         "or a different entity that happens to share the name. Exclude, "
                         "in particular: a classic-car listing for a brand name; an "
                         "unrelated award whose acronym matches the company name; a "
@@ -168,7 +152,7 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     symbol (e.g. "Apple Inc." vs "AAPL").
 
     Precision measures keep results on-topic. Two earlier attempts were
-    tried and found insufficient during manual testing (see Diario Tecnico):
+    tried and found insufficient during manual testing:
       - Plain q=<company name>, unquoted: matches each word in the name
         independently, anywhere in the article's full body. For a single
         common word like "Apple" this pulls in unrelated results (recipes,
@@ -192,7 +176,7 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     This alone does not (and structurally cannot, without a dedicated
     financial-news API or real entity disambiguation) solve every case: a
     short company name can coincide with an unrelated common use of the
-    same word — "Ford" in classic-car enthusiast headlines, "Coty" as a
+    same word, "Ford" in classic-car enthusiast headlines, "Coty" as a
     "Coach/Citizen Of The Year" award acronym. Two more layers handle that,
     applied in order: `excludeDomains` (see EXCLUDED_NOISE_DOMAINS above)
     trims specific low-editorial-quality sources observed to produce this
@@ -203,7 +187,7 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     only ever cover cases already observed).
 
     Returns a list of dicts: {"title", "source", "url", "published_at"}.
-    Never raises — returns an empty list on any failure (missing API key,
+    Never raises, returns an empty list on any failure (missing API key,
     network error, rate limit, malformed response, no results), so a news
     outage never blocks stock data retrieval or the LLM response.
     """
