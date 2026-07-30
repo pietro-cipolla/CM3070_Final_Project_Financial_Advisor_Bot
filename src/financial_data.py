@@ -1,6 +1,6 @@
 """
 financial_data.py
-Data Retrieval layer — fetches stock data from Yahoo Finance via yfinance.
+Data Retrieval layer, fetches stock data from Yahoo Finance via yfinance.
 
 Iteration 1: adds multi-ticker retrieval and a comparative context block
 so the RAG pipeline can answer questions that mention more than one company.
@@ -63,10 +63,10 @@ def get_stock_summary(ticker: str) -> dict:
 def get_price_history(ticker: str, period: str = "3mo"):
     """
     Fetch historical daily price data for charting, with a 20-day moving
-    average column (MA20) precomputed for the UI's Plotly chart
-    (Iteration 2).
+    average column (MA20) precomputed for the UI's Plotly chart.
 
-    Returns a pandas DataFrame on success, or None on any failure,
+    Returns a pandas DataFrame (yfinance's own format, indexed by date,
+    with an added "MA20" column) on success, or None on any failure,
     invalid ticker, no data, network error, so a charting problem never
     blocks the rest of the response; the UI omits the chart.
     """
@@ -107,7 +107,7 @@ def build_data_context(stock_data: dict) -> str:
         headlines_text = "\nRecent news:\n" + "\n".join(
             f"  - {h}" for h in stock_data["news_headlines"]
         )
-        
+
     dividend = (
         f"{round(stock_data['dividend_yield'], 2)}%"
         if stock_data.get("dividend_yield")
@@ -161,3 +161,22 @@ def build_comparative_context(stock_data_list: list[dict]) -> str:
         footer = f"\n\nNote: data could not be retrieved for: {failed_list}. Do not fabricate figures for these tickers."
 
     return f"{header}\n{body}{footer}\n"
+
+
+def get_current_price(ticker: str) -> float | None:
+    """
+    Iteration 3 (portfolio tracker). Lightweight current-price lookup used
+    to compute portfolio profit/loss. Deliberately reuses get_stock_summary()
+    rather than a separate yfinance call, so ticker validation and error
+    handling stay in one place, the portfolio tracker should not need its
+    own copy of the "is this a real ticker" logic.
+
+    Returns the current price as a float, or None if the ticker could not
+    be resolved (e.g. delisted, typo, or a temporary API failure). Callers
+    must treat None as "price unavailable", not as zero, a holding with an
+    unavailable price should be shown as such, never silently priced at $0.
+    """
+    summary = get_stock_summary(ticker)
+    if "error" in summary:
+        return None
+    return summary.get("price")
