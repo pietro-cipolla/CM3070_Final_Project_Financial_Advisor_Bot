@@ -1,21 +1,41 @@
 """
-Financial Advisor Bot — Feature Prototype
+Financial Advisor Bot - Feature Prototype
 Iteration 2: migrates the UI to the wide/sidebar "FULL" layout, adds a
 Plotly price chart with a 20-day moving average (MA20) for single-ticker
 queries, and adds real news headlines via NewsAPI (replacing the more
 limited yfinance-bundled headlines used in Iteration 1).
+Iteration 3: adds SQLite-backed conversation memory (resumable via a
+session ID) and a portfolio tracker.
 """
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import uuid
+from datetime import date
+
 import streamlit as st
 import plotly.graph_objects as go
 
-from src.financial_data import get_stock_summary, get_multiple_stock_summaries, get_price_history
+from src.financial_data import (
+    get_stock_summary,
+    get_multiple_stock_summaries,
+    get_price_history,
+    get_current_price,
+)
 from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
 from src.news_data import get_news_for_company, build_news_context
+from src.database import (
+    init_db,
+    save_message,
+    load_conversation,
+    clear_conversation,
+    add_holding,
+    get_portfolio,
+    remove_holding,
+)
+from src.portfolio import compute_portfolio_summary
 
 
 def escape_dollars(text: str) -> str:
@@ -76,17 +96,101 @@ def render_news(news_items: list[dict], ticker: str) -> None:
 # Page config
 st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈", layout="wide")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# Database init
+init_db()
+
+# Session state: session ID and conversation memory
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex[:8]
+if "loaded_session_id" not in st.session_state:
+    st.session_state.loaded_session_id = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Sidebar
 with st.sidebar:
     st.title("📈 Financial Advisor Bot")
     st.caption(
         "Ask a question about one or more publicly traded stocks (up to 3). "
-        "Data from Yahoo Finance, news from NewsAPI, analysis from an LLM."
+        "Data from Yahoo Finance, news from NewsAPI, analysis from a LLM."
     )
     st.divider()
+
+    st.subheader("🧠 Session memory")
+    st.caption(
+        "Save this ID to resume this conversation and portfolio later on the "
+        "same device. On the hosted demo, memory may not survive an app restart"
+    )
+    session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
+    if session_input and session_input != st.session_state.session_id:
+        st.session_state.session_id = session_input
+        st.session_state.loaded_session_id = None  # force a reload below
+
+    if st.session_state.loaded_session_id != st.session_state.session_id:
+        st.session_state.messages = load_conversation(st.session_state.session_id)
+        st.session_state.loaded_session_id = st.session_state.session_id
+
     if st.button("🗑️ Clear conversation"):
+        clear_conversation(st.session_state.session_id)
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+    st.subheader("💼 Portfolio tracker")
+    with st.form("add_holding_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_ticker = st.text_input("Ticker", key="new_ticker")
+            new_shares = st.number_input("Shares", min_value=0.0001, value=1.0, step=1.0, format="%.4f")
+        with col2:
+            new_price = st.number_input("Purchase price ($)", min_value=0.01, value=1.0, step=1.0, format="%.2f")
+            new_date = st.date_input("Purchase date", value=date.today())
+        submitted = st.form_submit_button("➕ Add holding")
+        if submitted:
+            ticker_clean = new_ticker.strip().upper()
+            if not ticker_clean:
+                st.warning("Enter a ticker symbol.")
+            else:
+                add_holding(
+                    st.session_state.session_id,
+                    ticker_clean,
+                    new_shares,
+                    new_price,
+                    str(new_date),
+                )
+                st.success(f"Added {new_shares:g} shares of {ticker_clean}.")
+
+    holdings = get_portfolio(st.session_state.session_id)
+    if holdings:
+        with st.spinner("Updating portfolio value..."):
+            summary = compute_portfolio_summary(holdings, get_current_price)
+
+        for h in summary["holdings"]:
+            st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
+            if h["pnl"] is None:
+                st.caption("⚠️ Current price unavailable — check the ticker symbol.")
+            else:
+                indicator = "🟢" if h["pnl"] >= 0 else "🔴"
+                st.caption(
+                    f"Current: ${h['current_price']:.2f} · "
+                    f"P&L: {indicator} ${h['pnl']:.2f} ({h['pnl_pct']:.1f}%)"
+                )
+            if st.button("Remove", key=f"remove_holding_{h['id']}"):
+                remove_holding(st.session_state.session_id, h["id"])
+                st.rerun()
+
+        st.divider()
+        if summary["total_pnl_pct"] is not None:
+            indicator = "🟢" if summary["total_pnl"] >= 0 else "🔴"
+            st.write(
+                f"**Total P&L: {indicator} ${summary['total_pnl']:.2f} "
+                f"({summary['total_pnl_pct']:.1f}%)**"
+            )
+        if summary["unpriced_tickers"]:
+            st.caption(f"Excluded from totals (price unavailable): {', '.join(summary['unpriced_tickers'])}")
+    else:
+        st.caption("No holdings yet. Add one above to start tracking your portfolio.")
+
     st.divider()
     st.caption(
         "⚠️ This tool is for educational purposes only and does not "
@@ -96,11 +200,7 @@ with st.sidebar:
 
 st.title("📈 Financial Advisor Bot")
 
-# Session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display conversation history 
+# Display conversation history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -115,6 +215,7 @@ if user_query:
     with st.chat_message("user"):
         st.write(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
+    save_message(st.session_state.session_id, "user", user_query)
 
     with st.chat_message("assistant"):
         with st.spinner("Understanding your question..."):
@@ -234,3 +335,4 @@ if user_query:
                         st.write(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
+        save_message(st.session_state.session_id, "assistant", response)
