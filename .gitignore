@@ -5,3 +5,10 @@ __pycache__/
 venv/
 .venv/
 .pytest_cache/
+
+# Iteration 3: SQLite database files are local persistence, never committed.
+# Only the schema-creation code (src/database.py) is version-controlled.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
