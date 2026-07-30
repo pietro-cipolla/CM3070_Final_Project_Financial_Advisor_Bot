@@ -1,7 +1,6 @@
 # Financial Advisor Bot
 
 **University of London — BSc Computer Science — CM3070 Final Project**
-Template 4.2 — Financial Advisor Bot (CM3020 Artificial Intelligence)
 
 ---
 
