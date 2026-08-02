@@ -42,7 +42,7 @@ from src.portfolio import compute_portfolio_summary
 
 def escape_dollars(text: str) -> str:
     """
-    Streamlit's markdown renderer treats a pair of '$' as LaTeX math
+     Streamlit's markdown renderer treats a pair of '$' as LaTeX math
     delimiters. LLM responses routinely mention two or more dollar amounts
     in the same paragraph, which Streamlit then renders as a single garbled math
     block instead of plain text.
@@ -109,7 +109,6 @@ st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈", layout=
 init_db()
 
 # Session state: session ID and conversation memory
-
 if "session_id" not in st.session_state:
     st.session_state.session_id = uuid.uuid4().hex[:8]
 if "loaded_session_id" not in st.session_state:
@@ -133,6 +132,7 @@ with st.sidebar:
         "restart (see report, Section 3.5 / Chapter 5)."
     )
     session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
+    
     if session_input and session_input != st.session_state.session_id:
         st.session_state.session_id = session_input
         st.session_state.loaded_session_id = None  # force a reload below
@@ -162,7 +162,8 @@ with st.sidebar:
             new_shares = st.number_input("Shares", min_value=0.0001, value=1.0, step=1.0, format="%.4f")
         with col2:
             new_price = st.number_input("Purchase price ($)", min_value=0.01, value=1.0, step=1.0, format="%.2f")
-            new_date = st.date_input("Purchase date", value=date.today())
+            # max_value=today
+            new_date = st.date_input("Purchase date", value=date.today(), max_value=date.today())
         submitted = st.form_submit_button("➕ Add holding")
         if submitted:
             ticker_clean = new_ticker.strip().upper()

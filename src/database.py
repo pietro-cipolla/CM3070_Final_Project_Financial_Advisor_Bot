@@ -11,7 +11,7 @@ Design notes:
     so tests can point at a temporary file, instead of the
     real application database, without needing a module-level
     connection.
-  - The actual .db file is NOT committed to the repository (see .gitignore);
+  - The actual .db file is NOT committed to the repository;
     only this schema-creation code is. init_db() is idempotent (CREATE TABLE
     IF NOT EXISTS) and safe to call on every app startup.
   - KNOWN LIMITATION: Streamlit
@@ -26,6 +26,7 @@ Design notes:
 
 import sqlite3
 from contextlib import contextmanager
+from datetime import date
 
 DEFAULT_DB_PATH = "financial_advisor.db"
 
@@ -122,15 +123,29 @@ def add_holding(
     """
     Insert a new portfolio holding and return its id.
 
-    Raises ValueError for non-positive shares or purchase_price rather than
-    silently storing a nonsensical holding (e.g. 0 shares, or a negative
-    price from a typo) — callers (the UI layer) are expected to catch this
-    and show a friendly message rather than letting a bad row into the DB.
+    Raises ValueError for non-positive shares or purchase_price, or for a
+    purchase_date in the future, rather than silently storing a nonsensical
+    holding, callers (the UI layer) are expected to catch this and show
+    a friendly message rather than letting a bad row into the DB.
+
+    The future-date check is a defence-in-depth measure, not the only
+    safeguard: app.py's date picker already constrains max_value to today,
+    same pattern as the existing shares/price checks pairing a UI
+    constraint with a code-level one (see Chapter 4 of the Draft Report).
+    purchase_date is expected as an ISO "YYYY-MM-DD" string; a value that
+    isn't a valid ISO date is also rejected here rather than stored as an
+    unparseable string that would only fail later when read back.
     """
     if shares <= 0:
         raise ValueError("shares must be a positive number")
     if purchase_price <= 0:
         raise ValueError("purchase_price must be a positive number")
+    try:
+        parsed_date = date.fromisoformat(purchase_date)
+    except ValueError:
+        raise ValueError(f"purchase_date must be an ISO date (YYYY-MM-DD), got {purchase_date!r}")
+    if parsed_date > date.today():
+        raise ValueError("purchase_date cannot be in the future")
 
     with _connect(db_path) as conn:
         cursor = conn.execute(
