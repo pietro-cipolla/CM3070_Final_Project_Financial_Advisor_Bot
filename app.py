@@ -42,7 +42,7 @@ from src.portfolio import compute_portfolio_summary
 
 def escape_dollars(text: str) -> str:
     """
-     Streamlit's markdown renderer treats a pair of '$' as LaTeX math
+    Streamlit's markdown renderer treats a pair of '$' as LaTeX math
     delimiters. LLM responses routinely mention two or more dollar amounts
     in the same paragraph, which Streamlit then renders as a single garbled math
     block instead of plain text.
@@ -132,7 +132,6 @@ with st.sidebar:
         "restart (see report, Section 3.5 / Chapter 5)."
     )
     session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
-    
     if session_input and session_input != st.session_state.session_id:
         st.session_state.session_id = session_input
         st.session_state.loaded_session_id = None  # force a reload below
@@ -170,14 +169,17 @@ with st.sidebar:
             if not ticker_clean:
                 st.warning("Enter a ticker symbol.")
             else:
-                add_holding(
-                    st.session_state.session_id,
-                    ticker_clean,
-                    new_shares,
-                    new_price,
-                    str(new_date),
-                )
-                st.success(f"Added {new_shares:g} shares of {ticker_clean}.")
+                try:
+                    add_holding(
+                        st.session_state.session_id,
+                        ticker_clean,
+                        new_shares,
+                        new_price,
+                        str(new_date),
+                    )
+                    st.success(f"Added {new_shares:g} shares of {ticker_clean}.")
+                except ValueError as e:
+                    st.error(f"Could not add holding: {e}")
 
     holdings = get_portfolio(st.session_state.session_id)
     if holdings:
