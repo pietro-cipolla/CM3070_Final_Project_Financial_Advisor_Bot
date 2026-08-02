@@ -1,9 +1,9 @@
 """
 rag_pipeline.py
-RAG Pipeline layer — query intent classification, ticker extraction and
+RAG Pipeline layer, query intent classification, ticker extraction and
 prompt construction.
 
-Iteration 1 additions (Preliminary Report, Table 4.2 — HIGH priority items):
+Iteration 1 additions:
   1. Multi-ticker extraction: a query can now reference up to 3 companies
      (e.g. "Compare Apple, Microsoft and Google"), instead of only the first
      ticker found.
@@ -23,12 +23,7 @@ MAX_TICKERS = 3
 
 VALID_INTENTS = {"stock_query", "open_ended", "unclear"}
 
-# Safety net for a known LLM failure mode: gpt-4o-mini occasionally writes
-# out the company name in caps instead of the real exchange ticker (e.g.
-# "FORD" instead of "F", observed in manual testing). Prompt wording alone
-# did not fully prevent this, so common cases are corrected in code. This
-# is a stopgap, not a general solution, a proper fix would validate/
-# resolve tickers against a real symbol-lookup service.
+
 COMMON_TICKER_FIXES = {
     "FORD": "F",
     "GOOGLE": "GOOGL",
@@ -62,13 +57,11 @@ def classify_query_intent(query: str) -> str:
     implies" without an example, and in practice the model classified
     product-reference queries like "Should I buy an iPhone maker?" as
     open_ended instead of stock_query, which routed them to a generic
-    clarification message and never gave the ticker extractor (which does
-    know "iPhone" implies Apple) a chance to run at all. The explicit
-    example below keeps the two prompts' behavior consistent.
+    clarification message and never gave the ticker extractor a chance to run at all. The explicit example below keeps the two prompts' behavior consistent.
 
     Defaults to "stock_query" on classification failure, so a downstream
     ticker-extraction miss (rather than a silent misclassification) is what
-    surfaces to the user, this keeps failures visible instead of masking
+    surfaces to the user — this keeps failures visible instead of masking
     them behind a generic clarification message.
     """
     try:
@@ -122,22 +115,21 @@ def _extract_all_tickers(query: str) -> list[str]:
     extract_tickers_with_truncation_info() build on this so the LLM is only
     called once per query regardless of which public function is used.
 
-    Only companies the user actually named (or unambiguously referenced,
-    e.g. by product name) are extracted, the model is explicitly told not
+    Only companies the user actually named are extracted, the model is explicitly told not
     to add extra competitors or "for comparison" companies that were never
     mentioned, since that produced unrequested results such as adding GM to
     a "Compare Tesla and Ford" query.
 
     IMPORTANT: the extraction prompt below must NOT itself cap the result at
     MAX_TICKERS. An earlier version told the model to extract "up to a
-    maximum of 3", which made the model self-truncate during extraction —
+    maximum of 3", which made the model self-truncate during extraction,
     so this function never actually returned more than 3 tickers, even when
     the user named 4 or more companies. That silently broke the truncation
     notice: extract_tickers_with_truncation_info() detects truncation by
     checking len(all_tickers) > MAX_TICKERS on THIS function's output, so if
     the model already capped it at 3, that check can never fire and the
-    user is never told a company was dropped. The cap
-    must be applied once, downstream, by the callers below, never here.
+    user is never told a company was dropped (see Diario Tecnico). The cap
+    must be applied once, downstream, by the callers below — never here.
     """
     try:
         response = client.chat.completions.create(
@@ -151,9 +143,8 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "You are a financial ticker extractor. "
                         "Given a user query, identify stock ticker symbols ONLY for "
                         "companies explicitly named or unambiguously referenced in the "
-                        "query itself (e.g. a product name like 'iPhone' clearly "
-                        "implies Apple). Do NOT add competitors, related companies, or "
-                        "any other company for context or comparison purposes — extract "
+                        "query itself. Do not add competitors, related companies, or "
+                        "any other company for context or comparison purposes, extract "
                         "every company the user actually mentioned, with NO upper limit "
                         "on how many you return (a separate step outside your control "
                         "handles any limit on how many are compared at once, and needs "
@@ -162,10 +153,7 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "If you find no companies at all, return NONE — never pad the "
                         "list with a placeholder. "
                         "Always use the REAL stock exchange ticker symbol, never the "
-                        "company name written in capital letters. For example: Ford "
-                        "Motor Company's ticker is F, not FORD; Alphabet/Google's "
-                        "ticker is GOOGL, not GOOGLE or ALPHABET; Meta/Facebook's "
-                        "ticker is META, not FACEBOOK. "
+                        "company name written in capital letters. "
                         "Reply with ONLY a comma-separated list of uppercase ticker "
                         "symbols (e.g. 'AAPL,MSFT,GOOGL'), with no spaces and no "
                         "other text. The word NONE must appear only as the entire "
@@ -181,11 +169,7 @@ def _extract_all_tickers(query: str) -> list[str]:
             return []
         tickers = [t.strip() for t in result.split(",") if t.strip()]
         tickers = [t for t in tickers if t[:1].isalpha() and "NONE" not in t]
-        # Correct known company name instead of ticker mistakes (see
-        # COMMON_TICKER_FIXES above) before dedup/cap, so a fixed ticker
-        # that duplicates another extracted ticker still gets deduped.
         tickers = [COMMON_TICKER_FIXES.get(t, t) for t in tickers]
-        # De-duplicate while preserving order
         seen = set()
         deduped = []
         for t in tickers:
@@ -227,7 +211,30 @@ def extract_tickers_with_truncation_info(query: str) -> tuple[list[str], bool]:
     return all_tickers[:MAX_TICKERS], len(all_tickers) > MAX_TICKERS
 
 
-def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[dict]:
+
+# Iteration 3, inclusive design improvement: always instruct the model to answer in the 
+# language the question was asked in.
+LANGUAGE_MATCH_INSTRUCTION = (
+    "Always answer in the same language the user's question was written in. "
+    "If the question mixes languages or the language is ambiguous, default to English.\n"
+)
+
+# Iteration 3, inclusive design improvement: an optional simplified-language
+# mode, toggled by the user in the UI.
+SIMPLIFIED_MODE_INSTRUCTION = (
+    "The user has requested simplified explanations: avoid financial jargon "
+    "where possible, and whenever a technical term is genuinely unavoidable "
+    "(e.g. 'P/E ratio'), briefly define it in plain language the first time "
+    "it is used. Prefer short sentences.\n"
+)
+
+
+def build_prompt(
+    stock_data,
+    user_query: str,
+    news_context: str = "",
+    simplified_mode: bool = False,
+) -> list[dict]:
     """
     Construct the message list for the OpenAI Chat API.
 
@@ -241,6 +248,10 @@ def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[di
     context alongside the yfinance-derived figures. Defaults to "" so
     existing callers (and Iteration 1 tests) that don't pass it are
     unaffected.
+
+    Iteration 3: language-matching is always applied; simplified_mode is an
+    opt-in flag (default False, so existing callers and tests are
+    unaffected) that adds the plain-language instruction above.
     """
     if isinstance(stock_data, list):
         data_context = build_comparative_context(stock_data)
@@ -257,7 +268,7 @@ def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[di
             "You are a financial advisor assistant. Your role is to help non-technical "
             "retail investors understand and compare stocks. "
             "You always base your analysis strictly on the retrieved financial data provided "
-            "in the context block below, never invent numbers or cite data not present in the context. "
+            "in the context block below — never invent numbers or cite data not present in the context. "
             "Explicitly compare the companies across the metrics given "
             "(valuation, growth, risk) rather than describing each one in isolation. "
             "Explain your reasoning in plain language. Always include a brief risk disclaimer. "
@@ -274,7 +285,11 @@ def build_prompt(stock_data, user_query: str, news_context: str = "") -> list[di
             "Keep responses concise and structured.\n\n"
         )
 
-    system_prompt = f"{instruction}{data_context}{news_context}"
+    accessibility_instructions = LANGUAGE_MATCH_INSTRUCTION
+    if simplified_mode:
+        accessibility_instructions += SIMPLIFIED_MODE_INSTRUCTION
+
+    system_prompt = f"{instruction}{accessibility_instructions}\n{data_context}{news_context}"
 
     return [
         {"role": "system", "content": system_prompt},

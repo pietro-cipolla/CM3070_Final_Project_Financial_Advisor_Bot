@@ -5,7 +5,9 @@ Plotly price chart with a 20-day moving average (MA20) for single-ticker
 queries, and adds real news headlines via NewsAPI (replacing the more
 limited yfinance-bundled headlines used in Iteration 1).
 Iteration 3: adds SQLite-backed conversation memory (resumable via a
-session ID) and a portfolio tracker.
+session ID) and a portfolio tracker, plus three inclusive-design
+improvements — colourblind-safe chart colours, an optional simplified
+explanation mode, and always-on language-matching in responses.
 """
 
 from dotenv import load_dotenv
@@ -54,6 +56,12 @@ def escape_dollars(text: str) -> str:
     return text.replace("$", "&#36;")
 
 
+# Iteration 3, inclusive design improvement
+
+CHART_COLOR_CLOSE = "#0072B2"  
+CHART_COLOR_MA20 = "#E69F00"   
+
+
 def render_price_chart(ticker: str) -> None:
     """
     Render a Plotly line chart of closing price + 20-day moving average
@@ -66,9 +74,10 @@ def render_price_chart(ticker: str) -> None:
         return
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], name="Close price", mode="lines"))
+    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], name="Close price", mode="lines",
+                              line=dict(color=CHART_COLOR_CLOSE)))
     fig.add_trace(go.Scatter(x=hist.index, y=hist["MA20"], name="20-day MA", mode="lines",
-                              line=dict(dash="dash")))
+                              line=dict(dash="dash", color=CHART_COLOR_MA20)))
     fig.update_layout(
         title=f"{ticker} — last 3 months",
         height=320,
@@ -100,6 +109,7 @@ st.set_page_config(page_title="Financial Advisor Bot", page_icon="📈", layout=
 init_db()
 
 # Session state: session ID and conversation memory
+
 if "session_id" not in st.session_state:
     st.session_state.session_id = uuid.uuid4().hex[:8]
 if "loaded_session_id" not in st.session_state:
@@ -112,14 +122,15 @@ with st.sidebar:
     st.title("📈 Financial Advisor Bot")
     st.caption(
         "Ask a question about one or more publicly traded stocks (up to 3). "
-        "Data from Yahoo Finance, news from NewsAPI, analysis from a LLM."
+        "Data from Yahoo Finance, news from NewsAPI, analysis from an LLM."
     )
     st.divider()
 
     st.subheader("🧠 Session memory")
     st.caption(
         "Save this ID to resume this conversation and portfolio later on the "
-        "same device. On the hosted demo, memory may not survive an app restart"
+        "same device. On the hosted demo, memory may not survive an app "
+        "restart (see report, Section 3.5 / Chapter 5)."
     )
     session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
     if session_input and session_input != st.session_state.session_id:
@@ -134,6 +145,13 @@ with st.sidebar:
         clear_conversation(st.session_state.session_id)
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+    simplified_mode = st.checkbox(
+        "🔤 Simplified explanations",
+        value=False,
+        help="Reduce financial jargon and briefly define technical terms when they can't be avoided.",
+    )
 
     st.divider()
     st.subheader("💼 Portfolio tracker")
@@ -290,7 +308,9 @@ if user_query:
                                 render_news(news_items, tickers[0])
                         news_context = build_news_context(news_items)
 
-                        messages = build_prompt(stock_data, user_query, news_context=news_context)
+                        messages = build_prompt(
+                            stock_data, user_query, news_context=news_context, simplified_mode=simplified_mode
+                        )
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
 
@@ -330,7 +350,9 @@ if user_query:
                                         render_news(items, stock_data["ticker"])
                         news_context = build_news_context(all_news_items)
 
-                        messages = build_prompt(stock_data_list, user_query, news_context=news_context)
+                        messages = build_prompt(
+                            stock_data_list, user_query, news_context=news_context, simplified_mode=simplified_mode
+                        )
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
 
