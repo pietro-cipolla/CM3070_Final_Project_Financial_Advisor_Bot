@@ -6,7 +6,7 @@ queries, and adds real news headlines via NewsAPI (replacing the more
 limited yfinance-bundled headlines used in Iteration 1).
 Iteration 3: adds SQLite-backed conversation memory (resumable via a
 session ID) and a portfolio tracker, plus three inclusive-design
-improvements — colourblind-safe chart colours, an optional simplified
+improvements, colourblind-safe chart colours, an optional simplified
 explanation mode, and always-on language-matching in responses.
 """
 
@@ -55,8 +55,12 @@ def escape_dollars(text: str) -> str:
     """
     return text.replace("$", "&#36;")
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_current_price(ticker: str):
+    return get_current_price(ticker)
 
-# Iteration 3, inclusive design improvement
+
+# Iteration 3, inclusive design improvement 
 
 CHART_COLOR_CLOSE = "#0072B2"  
 CHART_COLOR_MA20 = "#E69F00"   
@@ -116,7 +120,7 @@ if "loaded_session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Sidebar
+# Sidebar 
 with st.sidebar:
     st.title("📈 Financial Advisor Bot")
     st.caption(
@@ -128,8 +132,7 @@ with st.sidebar:
     st.subheader("🧠 Session memory")
     st.caption(
         "Save this ID to resume this conversation and portfolio later on the "
-        "same device. On the hosted demo, memory may not survive an app "
-        "restart (see report, Section 3.5 / Chapter 5)."
+        "same device. On the hosted demo, memory may not survive an app restart."
     )
     session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
     if session_input and session_input != st.session_state.session_id:
@@ -184,7 +187,7 @@ with st.sidebar:
     holdings = get_portfolio(st.session_state.session_id)
     if holdings:
         with st.spinner("Updating portfolio value..."):
-            summary = compute_portfolio_summary(holdings, get_current_price)
+            summary = compute_portfolio_summary(holdings, _cached_current_price)
 
         for h in summary["holdings"]:
             st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
