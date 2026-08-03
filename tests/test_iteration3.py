@@ -75,8 +75,76 @@ def test_conversations_are_isolated_by_session_id(db_path):
     assert [m["content"] for m in load_conversation("session-y", db_path)] == ["Message in session Y"]
 
 
-# Portfolio persistence
+def test_conversation_handles_a_long_history_in_order(db_path):
+    for i in range(60):
+        role = "user" if i % 2 == 0 else "assistant"
+        save_message("long-history-session", role, f"Message {i}", db_path)
 
+    history = load_conversation("long-history-session", db_path)
+
+    assert len(history) == 60
+    assert [m["content"] for m in history] == [f"Message {i}" for i in range(60)]
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+
+
+def test_session_id_with_sql_special_characters_is_stored_literally(db_path):
+    malicious_session_id = "abc'); DROP TABLE conversations; --"
+
+    save_message(malicious_session_id, "user", "hello", db_path)
+
+    assert load_conversation(malicious_session_id, db_path) == [
+        {"role": "user", "content": "hello"}
+    ]
+    save_message("unrelated-session", "user", "still works", db_path)
+    assert load_conversation("unrelated-session", db_path) == [
+        {"role": "user", "content": "still works"}
+    ]
+
+
+def test_ticker_with_sql_special_characters_is_stored_literally(db_path):
+    weird_ticker = "aapl'); drop table portfolio; --"
+
+    add_holding("session-a", weird_ticker, 1, 10.0, "2026-01-01", db_path)
+
+    holdings = get_portfolio("session-a", db_path)
+    assert len(holdings) == 1
+    assert holdings[0]["ticker"] == weird_ticker.upper()
+    # Table must still exist and accept further writes.
+    add_holding("session-b", "AAPL", 1, 10.0, "2026-01-01", db_path)
+    assert len(get_portfolio("session-b", db_path)) == 1
+
+
+def test_session_id_with_unicode_characters(db_path):
+    session_id = "sessione-àèìòù-日本語-🚀"
+
+    save_message(session_id, "user", "ciao", db_path)
+
+    assert load_conversation(session_id, db_path) == [{"role": "user", "content": "ciao"}]
+
+
+def test_clear_conversation_does_not_affect_portfolio(db_path):
+    save_message("session-a", "user", "hi", db_path)
+    add_holding("session-a", "AAPL", 10, 150.0, "2026-01-01", db_path)
+
+    clear_conversation("session-a", db_path)
+
+    assert load_conversation("session-a", db_path) == []
+    holdings = get_portfolio("session-a", db_path)
+    assert len(holdings) == 1
+    assert holdings[0]["ticker"] == "AAPL"
+
+
+def test_remove_holding_does_not_affect_conversation(db_path):
+    save_message("session-a", "user", "hi", db_path)
+    holding_id = add_holding("session-a", "AAPL", 10, 150.0, "2026-01-01", db_path)
+
+    remove_holding("session-a", holding_id, db_path)
+
+    assert load_conversation("session-a", db_path) == [{"role": "user", "content": "hi"}]
+
+
+# Portfolio persistence
 def test_add_and_get_holding(db_path):
     add_holding("session-a", "aapl", 10, 150.0, "2026-01-15", db_path)
 
@@ -101,6 +169,46 @@ def test_add_holding_rejects_non_positive_price(db_path):
         add_holding("session-a", "AAPL", 10, 0, "2026-01-15", db_path)
     with pytest.raises(ValueError):
         add_holding("session-a", "AAPL", 10, -1.0, "2026-01-15", db_path)
+
+
+def test_add_holding_rejects_future_purchase_date(db_path):
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    with pytest.raises(ValueError):
+        add_holding("session-a", "AAPL", 10, 150.0, tomorrow, db_path)
+
+
+def test_add_holding_accepts_todays_date(db_path):
+    from datetime import date
+
+    today = date.today().isoformat()
+    # Today is the boundary.
+    holding_id = add_holding("session-a", "AAPL", 10, 150.0, today, db_path)
+    assert holding_id is not None
+
+
+def test_add_holding_rejects_malformed_date_string(db_path):
+    with pytest.raises(ValueError):
+        add_holding("session-a", "AAPL", 10, 150.0, "not-a-date", db_path)
+
+
+def test_portfolio_handles_many_distinct_holdings(db_path):
+    tickers = [f"TICK{i}" for i in range(15)]
+    for i, ticker in enumerate(tickers):
+        add_holding("many-holdings-session", ticker, i + 1, 10.0 + i, "2026-01-01", db_path)
+
+    holdings = get_portfolio("many-holdings-session", db_path)
+    assert len(holdings) == 15
+    assert {h["ticker"] for h in holdings} == set(tickers)
+
+    prices = {ticker: 20.0 for ticker in tickers}
+    summary = compute_portfolio_summary(holdings, lambda t: prices[t])
+
+    assert len(summary["holdings"]) == 15
+    assert summary["unpriced_tickers"] == []
+    assert summary["total_cost_basis"] > 0
+    assert summary["total_market_value"] > 0
 
 
 def test_remove_holding_scoped_to_session(db_path):
@@ -149,11 +257,10 @@ def test_compute_holding_pnl_price_unavailable_is_none_not_zero():
     holding = {"id": 1, "ticker": "DELISTED", "shares": 5, "purchase_price": 10.0}
     result = compute_holding_pnl(holding, current_price=None)
 
-    # A missing price must read as "unknown", never as a fabricated $0 loss.
     assert result["pnl"] is None
     assert result["pnl_pct"] is None
     assert result["market_value"] is None
-    # cost_basis is still knowable even without a current price.
+    
     assert result["cost_basis"] == 50.0
 
 
@@ -165,7 +272,7 @@ def test_compute_portfolio_summary_totals_across_holdings():
     prices = {"AAPL": 110.0, "MSFT": 280.0}
 
     summary = compute_portfolio_summary(holdings, lambda t: prices[t])
-	
+
     assert summary["total_cost_basis"] == 2200.0
     assert summary["total_market_value"] == 2220.0
     assert summary["total_pnl"] == pytest.approx(20.0)
@@ -183,16 +290,13 @@ def test_compute_portfolio_summary_excludes_unpriced_holding_from_totals():
 
     summary = compute_portfolio_summary(holdings, price_lookup)
 
-    
     assert summary["total_cost_basis"] == 1000.0
     assert summary["total_market_value"] == 1100.0
     assert summary["unpriced_tickers"] == ["BADTICKER"]
-   
     assert len(summary["holdings"]) == 2
 
 
 def test_compute_portfolio_summary_looks_up_each_distinct_ticker_once():
-    # Two holdings of the same ticker should not trigger two separate price lookups.
     holdings = [
         {"id": 1, "ticker": "AAPL", "shares": 10, "purchase_price": 100.0},
         {"id": 2, "ticker": "AAPL", "shares": 5, "purchase_price": 110.0},
