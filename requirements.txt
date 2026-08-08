@@ -7,3 +7,4 @@ pytest==8.2.2
 requests==2.32.3
 plotly==5.22.0
 vaderSentiment==3.3.2
+scipy>=1.11
