@@ -1,6 +1,6 @@
 """
 financial_data.py
-Data Retrieval layer, fetches stock data from Yahoo Finance via yfinance.
+Data Retrieval layer — fetches stock data from Yahoo Finance via yfinance.
 
 Iteration 1: adds multi-ticker retrieval and a comparative context block
 so the RAG pipeline can answer questions that mention more than one company.
@@ -66,9 +66,9 @@ def get_price_history(ticker: str, period: str = "3mo"):
     average column (MA20) precomputed for the UI's Plotly chart.
 
     Returns a pandas DataFrame (yfinance's own format, indexed by date,
-    with an added "MA20" column) on success, or None on any failure,
-    invalid ticker, no data, network error, so a charting problem never
-    blocks the rest of the response; the UI omits the chart.
+    with an added "MA20" column) on success, or None on any failure —
+    invalid ticker, no data, network error — so a charting problem never
+    blocks the rest of the response; the UI simply omits the chart.
     """
     try:
         stock = yf.Ticker(ticker.upper())
@@ -180,3 +180,22 @@ def get_current_price(ticker: str) -> float | None:
     if "error" in summary:
         return None
     return summary.get("price")
+
+
+def get_closing_prices(ticker: str, period: str = "1y"):
+    """
+    Iteration 4 (MPT optimizer and genetic-algorithm backtester). Historical
+    closing-price series for a ticker, reusing get_price_history() rather
+    than a separate yfinance call, same "don't duplicate the is-this-a-
+    real-ticker/network logic" principle as get_current_price() reusing
+    get_stock_summary().
+
+    Returns a pandas Series of closing prices indexed by date, or None if
+    history could not be retrieved (invalid ticker, no data, network
+    error) — never an empty or fabricated series, so callers (optimizer.py,
+    backtesting.py) can treat None as "exclude this ticker" unambiguously.
+    """
+    hist = get_price_history(ticker, period=period)
+    if hist is None or hist.empty:
+        return None
+    return hist["Close"]
