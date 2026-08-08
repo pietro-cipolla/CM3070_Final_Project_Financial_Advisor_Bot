@@ -48,6 +48,7 @@ from src.database import (
 )
 from src.portfolio import compute_portfolio_summary
 from src.backtesting import backtest_ticker
+from src.optimizer import compute_portfolio_optimization
 
 
 def escape_dollars(text: str) -> str:
@@ -69,6 +70,12 @@ def escape_dollars(text: str) -> str:
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_current_price(ticker: str):
     return get_current_price(ticker)
+
+
+# Iteration 4: both the backtester and the MPT optimizer need historical
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_closing_prices(ticker: str):
+    return get_closing_prices(ticker)
 
 
 # Iteration 3, inclusive design improvement 
@@ -144,8 +151,7 @@ def render_news(news_items: list[dict], ticker: str) -> None:
 
     Does not render its own "Recent news" title: callers wrap this in an
     st.expander(f"... — {ticker}") that already carries that heading, and
-    printing it again here produced a visibly duplicated title in the UI
-    (Iteration 2, Problema 14).
+    printing it again here produced a visibly duplicated title in the UI.
     """
     if not news_items:
         return
@@ -264,6 +270,35 @@ with st.sidebar:
         if summary["unpriced_tickers"]:
             st.caption(f"Excluded from totals (price unavailable): {', '.join(summary['unpriced_tickers'])}")
 
+        st.divider()
+        with st.expander("🎯 Suggested rebalancing"):
+            with st.spinner("Optimizing portfolio weights..."):
+                opt = compute_portfolio_optimization(
+                    holdings,
+                    history_lookup=_cached_closing_prices,
+                    price_lookup=_cached_current_price,
+                )
+            if opt["note"]:
+                st.caption(opt["note"])
+            if opt["suggested_weights"]:
+                for ticker, w in sorted(opt["suggested_weights"].items(), key=lambda x: -x[1]):
+                    current = (opt["current_weights"] or {}).get(ticker)
+                    current_str = f" (currently {current*100:.1f}%)" if current is not None else ""
+                    st.write(f"**{ticker}**: {w*100:.1f}%{current_str}")
+                if opt["sharpe_ratio"] is not None:
+                    st.caption(
+                        f"Expected annual return: {opt['expected_return']*100:.1f}% · "
+                        f"Expected annual volatility: {opt['expected_volatility']*100:.1f}% · "
+                        f"Sharpe ratio: {opt['sharpe_ratio']:.2f}"
+                    )
+            if opt["excluded_tickers"]:
+                for t, reason in opt["excluded_tickers"].items():
+                    st.caption(f"⚠️ {t} excluded: {reason}")
+            st.caption(
+                "Long-only allocation based on 1 year of historical returns. "
+                "Past performance does not guarantee future results — this is "
+                "not financial advice."
+            )
     else:
         st.caption("No holdings yet. Add one above to start tracking your portfolio.")
 
