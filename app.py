@@ -32,6 +32,7 @@ from src.financial_data import (
     get_multiple_stock_summaries,
     get_price_history,
     get_current_price,
+    get_closing_prices,
 )
 from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
@@ -46,6 +47,7 @@ from src.database import (
     remove_holding,
 )
 from src.portfolio import compute_portfolio_summary
+from src.backtesting import backtest_ticker
 
 
 def escape_dollars(text: str) -> str:
@@ -99,6 +101,38 @@ def render_price_chart(ticker: str) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_backtest(ticker: str) -> None:
+    """
+    Render the genetic-algorithm moving-average-crossover backtest result
+    for a single ticker (Iteration 4, src/backtesting.py). Reports the
+    evolved strategy's total return against buy-and-hold honestly in both
+    directions, never hiding an underperforming result. Silently renders
+    nothing if history could not be retrieved or is too short, same
+    fail-soft convention as render_price_chart, so a backtest failure
+    never blocks the rest of the response.
+    """
+    result = backtest_ticker(ticker, get_closing_prices)
+    if result["note"] is not None:
+        st.caption(f"Backtest unavailable for {ticker}: {result['note']}")
+        return
+
+    indicator = "🟢" if result["beat_benchmark"] else "🔴"
+    st.write(
+        f"Evolved strategy: **{result['short_window']}/{result['long_window']}-day** "
+        f"moving-average crossover ({result['num_trades']} trades)"
+    )
+    st.write(
+        f"Strategy return: **{result['strategy_return']*100:.1f}%** vs. "
+        f"buy-and-hold: **{result['benchmark_return']*100:.1f}%** "
+        f"{indicator} {'beat' if result['beat_benchmark'] else 'underperformed'} the benchmark"
+    )
+    st.caption(
+        "Genetic algorithm (tournament selection, crossover, mutation) evolved over "
+        "20 generations on 1 year of historical data. "
+        "Past performance does not guarantee future results — this is not financial advice."
+    )
+
+
 # Iteration 4: sentiment icon shown next to each headline.
 SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
 
@@ -110,7 +144,8 @@ def render_news(news_items: list[dict], ticker: str) -> None:
 
     Does not render its own "Recent news" title: callers wrap this in an
     st.expander(f"... — {ticker}") that already carries that heading, and
-    printing it again here produced a visibly duplicated title in the UI.
+    printing it again here produced a visibly duplicated title in the UI
+    (Iteration 2, Problema 14).
     """
     if not news_items:
         return
@@ -323,6 +358,10 @@ if user_query:
                             st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
 
                             render_price_chart(tickers[0])
+
+                        with st.expander(f"🧬 Strategy backtest — {tickers[0]}", expanded=False):
+                            with st.spinner("Evolving strategy parameters..."):
+                                render_backtest(tickers[0])
 
                         with st.spinner("Fetching recent news..."):
                             news_items = get_news_for_company(stock_data.get("name"), tickers[0])
