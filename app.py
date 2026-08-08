@@ -1,13 +1,21 @@
 """
 Financial Advisor Bot - Feature Prototype
-Iteration 2: migrates the UI to the wide/sidebar "FULL" layout, adds a
+Iteration 2: migrates the UI to the wide/sidebar layout, adds a
 Plotly price chart with a 20-day moving average (MA20) for single-ticker
 queries, and adds real news headlines via NewsAPI (replacing the more
 limited yfinance-bundled headlines used in Iteration 1).
 Iteration 3: adds SQLite-backed conversation memory (resumable via a
 session ID) and a portfolio tracker, plus three inclusive-design
-improvements, colourblind-safe chart colours, an optional simplified
+improvements — colourblind-safe chart colours, an optional simplified
 explanation mode, and always-on language-matching in responses.
+Iteration 4: adds VADER-based sentiment icons on news headlines, a
+genetic-algorithm-optimized moving-average-crossover backtest shown
+alongside the price chart, and a Markowitz (MPT) mean-variance
+optimization panel that suggests rebalancing weights for the tracked
+portfolio, three algorithmic components (language-model reasoning,
+a genetic algorithm, and mean-variance optimization) grounding the
+template's "active portfolio management" language in real,
+independently testable code.
 """
 
 from dotenv import load_dotenv
@@ -27,7 +35,7 @@ from src.financial_data import (
 )
 from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
-from src.news_data import get_news_for_company, build_news_context
+from src.news_data import get_news_for_company, build_news_context, score_news_sentiment
 from src.database import (
     init_db,
     save_message,
@@ -42,7 +50,7 @@ from src.portfolio import compute_portfolio_summary
 
 def escape_dollars(text: str) -> str:
     """
-    Streamlit's markdown renderer treats a pair of '$' as LaTeX math
+   Streamlit's markdown renderer treats a pair of '$' as LaTeX math
     delimiters. LLM responses routinely mention two or more dollar amounts
     in the same paragraph, which Streamlit then renders as a single garbled math
     block instead of plain text.
@@ -55,13 +63,13 @@ def escape_dollars(text: str) -> str:
     """
     return text.replace("$", "&#36;")
 
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_current_price(ticker: str):
     return get_current_price(ticker)
 
 
 # Iteration 3, inclusive design improvement 
-
 CHART_COLOR_CLOSE = "#0072B2"  
 CHART_COLOR_MA20 = "#E69F00"   
 
@@ -91,9 +99,14 @@ def render_price_chart(ticker: str) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+# Iteration 4: sentiment icon shown next to each headline.
+SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
+
+
 def render_news(news_items: list[dict], ticker: str) -> None:
     """
-    Render a small news headlines list with clickable source links.
+    Render a small news headlines list with clickable source links and a
+    VADER sentiment icon per headline (Iteration 4).
 
     Does not render its own "Recent news" title: callers wrap this in an
     st.expander(f"... — {ticker}") that already carries that heading, and
@@ -101,9 +114,11 @@ def render_news(news_items: list[dict], ticker: str) -> None:
     """
     if not news_items:
         return
-    for item in news_items:
+    scored_items = score_news_sentiment(news_items)
+    for item in scored_items:
         date = item["published_at"][:10] if item.get("published_at") else ""
-        st.markdown(f"- [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
+        icon = SENTIMENT_ICONS.get(item.get("sentiment_label"), "⚪")
+        st.markdown(f"{icon} [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
 
 
 # Page config
@@ -120,7 +135,7 @@ if "loaded_session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Sidebar 
+# Sidebar
 with st.sidebar:
     st.title("📈 Financial Advisor Bot")
     st.caption(
@@ -135,6 +150,7 @@ with st.sidebar:
         "same device. On the hosted demo, memory may not survive an app restart."
     )
     session_input = st.text_input("Session ID", value=st.session_state.session_id).strip()
+    
     if session_input and session_input != st.session_state.session_id:
         st.session_state.session_id = session_input
         st.session_state.loaded_session_id = None  # force a reload below
@@ -212,6 +228,7 @@ with st.sidebar:
             )
         if summary["unpriced_tickers"]:
             st.caption(f"Excluded from totals (price unavailable): {', '.join(summary['unpriced_tickers'])}")
+
     else:
         st.caption("No holdings yet. Add one above to start tracking your portfolio.")
 
