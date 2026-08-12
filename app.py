@@ -1,6 +1,6 @@
 """
 Financial Advisor Bot - Feature Prototype
-Iteration 2: migrates the UI to the wide/sidebar layout, adds a
+Iteration 2: migrates the UI to the wide/sidebar "FULL" layout, adds a
 Plotly price chart with a 20-day moving average (MA20) for single-ticker
 queries, and adds real news headlines via NewsAPI (replacing the more
 limited yfinance-bundled headlines used in Iteration 1).
@@ -47,7 +47,7 @@ from src.database import (
     remove_holding,
 )
 from src.portfolio import compute_portfolio_summary
-from src.backtesting import backtest_ticker
+from src.backtesting import backtest_ticker, DEFAULT_COST_PER_TRADE
 from src.optimizer import compute_portfolio_optimization
 
 
@@ -72,7 +72,6 @@ def _cached_current_price(ticker: str):
     return get_current_price(ticker)
 
 
-# Iteration 4: both the backtester and the MPT optimizer need historical
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_closing_prices(ticker: str):
     return get_closing_prices(ticker)
@@ -111,14 +110,14 @@ def render_price_chart(ticker: str) -> None:
 def render_backtest(ticker: str) -> None:
     """
     Render the genetic-algorithm moving-average-crossover backtest result
-    for a single ticker (Iteration 4, src/backtesting.py). Reports the
+    for a single ticker. Reports the
     evolved strategy's total return against buy-and-hold honestly in both
     directions, never hiding an underperforming result. Silently renders
     nothing if history could not be retrieved or is too short, same
     fail-soft convention as render_price_chart, so a backtest failure
     never blocks the rest of the response.
     """
-    result = backtest_ticker(ticker, get_closing_prices)
+    result = backtest_ticker(ticker, get_closing_prices, cost_per_trade=DEFAULT_COST_PER_TRADE)
     if result["note"] is not None:
         st.caption(f"Backtest unavailable for {ticker}: {result['note']}")
         return
@@ -135,12 +134,13 @@ def render_backtest(ticker: str) -> None:
     )
     st.caption(
         "Genetic algorithm (tournament selection, crossover, mutation) evolved over "
-        "20 generations on 1 year of historical data. "
+        "20 generations on 1 year of historical data, optimizing for return net of an "
+        f"estimated {result['cost_per_trade']*100:.2f}% cost per trade (a flat approximation, "
+        "not a real broker's actual spread/commission/slippage). "
         "Past performance does not guarantee future results — this is not financial advice."
     )
 
 
-# Iteration 4: sentiment icon shown next to each headline.
 SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
 
 
@@ -151,7 +151,8 @@ def render_news(news_items: list[dict], ticker: str) -> None:
 
     Does not render its own "Recent news" title: callers wrap this in an
     st.expander(f"... — {ticker}") that already carries that heading, and
-    printing it again here produced a visibly duplicated title in the UI.
+    printing it again here produced a visibly duplicated title in the UI
+    (Iteration 2, Problema 14).
     """
     if not news_items:
         return

@@ -38,12 +38,12 @@ from src.backtesting import (
     SHORT_WINDOW_BOUNDS,
     LONG_WINDOW_BOUNDS,
     MIN_WINDOW_GAP,
+    DEFAULT_COST_PER_TRADE,
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────
+
 # Sentiment analysis (VADER) — src/news_data.py
-# ─────────────────────────────────────────────────────────────────────────
 
 def test_score_headline_sentiment_clearly_positive():
     result = score_headline_sentiment("Great quarter for the company, profits soar")
@@ -58,24 +58,12 @@ def test_score_headline_sentiment_clearly_negative():
 
 
 def test_score_headline_sentiment_finance_lexicon_fixes_previously_known_limitation():
-    # History: manual testing originally found this headline scoring
-    # neutral, because none of "faces", "antitrust", or "probe" carried
-    # weight in VADER's general-purpose lexicon. FINANCIAL_LEXICON_OVERRIDE
-    # (src/finance_lexicon.py) adds "antitrust" and "probe" as negative
-    # terms specifically to fix this class of case — this test locks in
-    # the fix, replacing the old test that documented it as an open
-    # limitation.
     result = score_headline_sentiment("Apple faces antitrust probe in EU")
     assert result["label"] == "negative"
     assert result["compound"] <= NEGATIVE_THRESHOLD
 
 
 def test_score_headline_sentiment_beating_expectations_is_positive_not_violent():
-    # The headline that motivated this whole override (Ford, manual
-    # testing 2026-07-29): VADER's general lexicon scores "beating" as
-    # -2.0 (physical violence), which inverted a strongly positive
-    # earnings-beat headline into a negative score. FINANCIAL_LEXICON_OVERRIDE
-    # corrects "beating" specifically for the finance sense of the word.
     result = score_headline_sentiment(
         "Ford stock surges after CEO reveals the surprising reason the "
         "automaker is beating expectations while rivals struggle"
@@ -85,35 +73,16 @@ def test_score_headline_sentiment_beating_expectations_is_positive_not_violent()
 
 
 def test_score_headline_sentiment_downgrade_alone_is_negative():
-    # "downgrade" is absent from VADER's stock lexicon entirely (verified
-    # directly against analyzer.lexicon), so a headline with no other
-    # charged word previously scored exactly neutral despite being
-    # negative news. Found in manual testing (Salesforce/Levi Strauss,
-    # 2026-07-29).
     result = score_headline_sentiment("Company downgraded by analysts at major bank")
     assert result["label"] == "negative"
 
 
 def test_score_headline_sentiment_generic_word_context_limitation_remains():
-    # The override fixes missing/wrongly-signed FINANCE vocabulary, not
-    # generic words that misfire because VADER has no sentence-level
-    # context. "rich" (+2.6 in VADER's own lexicon) is deliberately NOT
-    # touched by the override — patching it would risk breaking VADER's
-    # otherwise-reasonable general-purpose scoring elsewhere. This
-    # reproduces, in simplified form, a real headline found in manual
-    # testing ("Ford Sales Are Down, But Rich People Keep Buying Raptors",
-    # 2026-07-29): sales being down is the actual news, but "rich" alone
-    # is enough to flip the score positive. This test documents that this
-    # class of error is a structural, currently-open limitation, not an
-    # oversight — see src/finance_lexicon.py's module docstring.
     result = score_headline_sentiment("Sales are down, but rich buyers keep purchasing the trucks")
-    assert result["label"] == "positive"  # still wrong, on purpose — not yet fixable by lexicon alone
+    assert result["label"] == "positive"
 
 
 def test_financial_lexicon_override_keys_are_lowercase():
-    # VADER's own lexicon is keyed in lowercase; keeping the override
-    # consistent avoids silently-inactive entries (a capitalized key would
-    # never match VADER's internal lowercase tokenization).
     assert all(k == k.lower() for k in FINANCIAL_LEXICON_OVERRIDE)
 
 
@@ -146,7 +115,6 @@ def test_score_news_sentiment_enriches_every_item():
     enriched = score_news_sentiment(items)
     assert enriched[0]["sentiment_label"] == "positive"
     assert enriched[1]["sentiment_label"] == "negative"
-    # Original fields preserved
     assert enriched[0]["source"] == "A"
     assert enriched[1]["url"] == "y"
 
@@ -218,9 +186,8 @@ def test_build_news_context_can_disable_sentiment():
     assert "Great quarter" in context
 
 
-# ─────────────────────────────────────────────────────────────────────────
+
 # Genetic-algorithm backtesting — src/backtesting.py
-# ─────────────────────────────────────────────────────────────────────────
 
 def _flat_series(price=100.0, days=80):
     dates = pd.date_range("2025-01-01", periods=days, freq="B")
@@ -256,27 +223,13 @@ def test_simulate_crossover_strategy_flat_price_gives_zero_return():
 
 
 def test_simulate_crossover_strategy_trades_next_day_not_same_day():
-    # A price series with a clear jump: the short MA crosses above the long
-    # MA on some day D, but the strategy must NOT capture the return that
-    # happens ON day D itself (it only learns the signal at day D's close).
     series = _monotonic_series(start=100, step=1.0, days=60)
     result = simulate_crossover_strategy(series, short_window=5, long_window=20)
-    # If the strategy incorrectly captured same-day returns, its total
-    # return would exceed buy-and-hold on this steadily-rising series once
-    # invested; shifting one day later means it should not, since it always
-    # enters one trading day after buy-and-hold would already be invested.
     benchmark = compute_buy_and_hold_return(series)
     assert result["total_return"] <= benchmark + 1e-9
 
 
 def test_simulate_crossover_strategy_short_series_returns_zero():
-    # With fewer data points than long_window, the long moving average is
-    # never defined, so the crossover signal never fires and the strategy
-    # is never invested: total_return is exactly 0.0 rather than raising
-    # or fabricating a signal from insufficient data. (The realized daily
-    # returns are still non-empty here — all zero, since "never invested"
-    # means a position of 0 on every tradeable day, not the absence of a
-    # return series.)
     series = _flat_series(days=5)  # shorter than long_window
     result = simulate_crossover_strategy(series, short_window=5, long_window=20)
     assert result["total_return"] == 0.0
@@ -284,7 +237,6 @@ def test_simulate_crossover_strategy_short_series_returns_zero():
 
 
 def test_simulate_crossover_strategy_never_shorts():
-    # Position values (post-shift) must only ever be 0 or 1, never negative.
     series = _seeded_walk(days=100, seed=7)
     short_ma = series.rolling(5).mean()
     long_ma = series.rolling(20).mean()
@@ -387,12 +339,6 @@ def test_backtest_ticker_excludes_ticker_with_too_little_history():
 
 
 def test_backtest_ticker_downtrend_strategy_avoids_the_worst_of_the_decline():
-    # A relentless, noiseless downtrend: the short MA is always below the
-    # long MA once both are computable, so the strategy is never invested
-    # (post warm-up) and its total_return is exactly 0.0, while
-    # buy-and-hold is deeply negative. This is a deterministic scenario
-    # (no seeded randomness needed) that directly demonstrates the
-    # "strategy_return can legitimately exceed benchmark_return" case.
     series = _monotonic_decreasing_series(start=200, step=0.5, days=150)
     result = backtest_ticker("DOWN", history_lookup=lambda t: series, generations=8, seed=1)
     assert result["note"] is None
@@ -420,3 +366,85 @@ def test_backtest_ticker_is_deterministic_given_a_seed():
     assert result_a["short_window"] == result_b["short_window"]
     assert result_a["long_window"] == result_b["long_window"]
     assert result_a["strategy_return"] == pytest.approx(result_b["strategy_return"])
+
+
+
+# Partial transaction-cost model — cost_per_trade
+
+def test_simulate_crossover_strategy_num_trades_matches_independent_count():
+    series = _seeded_walk(days=150, drift=0.0006, vol=0.02, seed=77)
+    result = simulate_crossover_strategy(series, short_window=5, long_window=20)
+
+    short_ma = series.rolling(5).mean()
+    long_ma = series.rolling(20).mean()
+    signal = (short_ma > long_ma).astype(int)
+    position = signal.shift(1).fillna(0).tolist()
+    manual_trades = sum(1 for i in range(1, len(position)) if position[i] != position[i - 1])
+
+    assert result["num_trades"] == manual_trades
+    assert result["num_trades"] > 0  # sanity: this scenario does trade
+
+
+def test_simulate_crossover_strategy_default_cost_is_zero_and_unaffects_return():
+    series = _seeded_walk(days=200, drift=0.0007, vol=0.015, seed=8)
+    default_call = simulate_crossover_strategy(series, 10, 30)
+    explicit_zero = simulate_crossover_strategy(series, 10, 30, cost_per_trade=0.0)
+    assert default_call["total_return"] == explicit_zero["total_return"]
+
+
+def test_simulate_crossover_strategy_cost_reduces_return_when_trades_occur():
+    series = _seeded_walk(days=252, drift=0.0008, vol=0.015, seed=5)
+    no_cost = simulate_crossover_strategy(series, 10, 30, cost_per_trade=0.0)
+    with_cost = simulate_crossover_strategy(series, 10, 30, cost_per_trade=0.001)
+    assert no_cost["num_trades"] == with_cost["num_trades"] > 0
+    assert with_cost["total_return"] < no_cost["total_return"]
+    expected_drop = no_cost["num_trades"] * 0.001
+    actual_drop = no_cost["total_return"] - with_cost["total_return"]
+    assert actual_drop == pytest.approx(expected_drop, rel=0.25)
+
+
+def test_simulate_crossover_strategy_zero_trades_means_cost_has_no_effect():
+    series = _monotonic_decreasing_series(start=200, step=0.5, days=150)
+    no_cost = simulate_crossover_strategy(series, 10, 30, cost_per_trade=0.0)
+    high_cost = simulate_crossover_strategy(series, 10, 30, cost_per_trade=0.05)
+    assert no_cost["num_trades"] == 0
+    assert no_cost["total_return"] == high_cost["total_return"] == 0.0
+
+
+def test_fitness_with_cost_is_lower_than_without_when_trades_occur():
+    series = _seeded_walk(days=252, drift=0.0008, vol=0.015, seed=5)
+    individual = (10, 30)
+    fitness_no_cost = _fitness(individual, series, cost_per_trade=0.0)
+    fitness_with_cost = _fitness(individual, series, cost_per_trade=0.001)
+    assert fitness_with_cost < fitness_no_cost
+
+
+def test_evolve_strategy_net_of_cost_fitness_is_lower_than_cost_free():
+    series = _seeded_walk(days=252, drift=0.0008, vol=0.015, seed=5)
+    no_cost = evolve_strategy(series, population_size=20, generations=10, cost_per_trade=0.0, seed=5)
+    with_cost = evolve_strategy(series, population_size=20, generations=10, cost_per_trade=0.002, seed=5)
+    assert with_cost["best_fitness"] <= no_cost["best_fitness"]
+
+
+def test_backtest_ticker_default_cost_free_and_reports_num_trades():
+    series = _seeded_walk(days=252, drift=0.0008, vol=0.015, seed=5)
+    result = backtest_ticker("COST0", history_lookup=lambda t: series, generations=10, seed=5)
+    assert result["cost_per_trade"] == 0.0
+    assert isinstance(result["num_trades"], int)
+    assert result["num_trades"] >= 0
+
+
+def test_backtest_ticker_with_cost_reports_cost_and_lower_or_equal_return():
+    series = _seeded_walk(days=252, drift=0.0008, vol=0.015, seed=5)
+    no_cost = backtest_ticker("COST_A", history_lookup=lambda t: series, generations=10, cost_per_trade=0.0, seed=5)
+    with_cost = backtest_ticker(
+        "COST_B", history_lookup=lambda t: series, generations=10, cost_per_trade=DEFAULT_COST_PER_TRADE, seed=5
+    )
+    assert with_cost["cost_per_trade"] == DEFAULT_COST_PER_TRADE
+    assert with_cost["strategy_return"] <= no_cost["strategy_return"]
+
+
+def test_empty_backtest_result_still_reports_cost_per_trade_and_none_num_trades():
+    result = backtest_ticker("ZZZ", history_lookup=lambda t: None, cost_per_trade=0.001)
+    assert result["cost_per_trade"] == 0.001
+    assert result["num_trades"] is None

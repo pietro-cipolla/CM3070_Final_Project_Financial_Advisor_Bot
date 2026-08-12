@@ -1,6 +1,6 @@
 """
 backtesting.py
-Iteration 4: Genetic algorithm optimized moving average crossover backtesting .
+Genetic-algorithm-optimized moving-average-crossover backtesting - Iteration 4.
 
 Evolves the two parameters of a simple moving-average crossover trading
 strategy (a short and a long lookback window, in trading days) using a
@@ -30,13 +30,22 @@ DEFAULT_GENERATIONS = 20
 DEFAULT_ELITE_COUNT = 2
 DEFAULT_MUTATION_RATE = 0.2
 DEFAULT_TOURNAMENT_SIZE = 3
+DEFAULT_COST_PER_TRADE = 0.0005
 
 
-def simulate_crossover_strategy(prices: pd.Series, short_window: int, long_window: int) -> dict:
+def simulate_crossover_strategy(
+    prices: pd.Series, short_window: int, long_window: int, cost_per_trade: float = 0.0
+) -> dict:
     """
     Simulate a long-only moving-average crossover strategy on a price
     series: fully invested when the short-window moving average is above
     the long-window moving average, in cash otherwise.
+
+    cost_per_trade (default 0.0, i.e. cost-free, matching the original
+    behaviour) deducts a flat fraction of position value from the
+    strategy's return on every day a trade — an entry or an exit —
+    actually occurs (see module docstring for the partial transaction-cost
+    model this implements and its limitations).
 
     Days before the long moving average has enough data to compute (the
     first long_window-1 observations) produce no signal and are excluded
@@ -45,23 +54,27 @@ def simulate_crossover_strategy(prices: pd.Series, short_window: int, long_windo
 
     Returns {"total_return": float, "daily_returns": pd.Series,
     "num_trades": int}. total_return is the compounded return of the
-    strategy's realized daily returns over the whole usable period; 0.0 if
-    there were no usable return observations at all (e.g. price series too
-    short). num_trades counts how many entries and exits occurred, useful
-    for reporting how "chatty" a given (short_window, long_window) pair is.
+    strategy's realized (net of any cost) daily returns over the whole
+    usable period; 0.0 if there were no usable return observations at all
+    (e.g. price series too short). num_trades counts how many entries and
+    exits occurred, regardless of cost_per_trade — useful for reporting
+    how "chatty" a given (short_window, long_window) pair is even when no
+    cost is being modeled.
     """
     short_ma = prices.rolling(window=short_window).mean()
     long_ma = prices.rolling(window=long_window).mean()
 
     signal = (short_ma > long_ma).astype(int)
-    # Trade on the day AFTER the signal is known, never the same day it forms.
     position = signal.shift(1).fillna(0)
 
     trades = position.diff().abs().fillna(0)
     num_trades = int(trades.sum())
 
     daily_returns = prices.pct_change()
-    strategy_returns = (daily_returns * position).dropna()
+    strategy_returns = daily_returns * position
+    if cost_per_trade > 0:
+        strategy_returns = strategy_returns - trades * cost_per_trade
+    strategy_returns = strategy_returns.dropna()
 
     total_return = float((1 + strategy_returns).prod() - 1) if len(strategy_returns) else 0.0
     return {"total_return": total_return, "daily_returns": strategy_returns, "num_trades": num_trades}
@@ -81,10 +94,16 @@ def _random_individual(rng: np.random.Generator) -> tuple[int, int]:
     return short_window, long_window
 
 
-def _fitness(individual: tuple[int, int], prices: pd.Series) -> float:
-    """Fitness = total_return of the (short_window, long_window) pair."""
+def _fitness(individual: tuple[int, int], prices: pd.Series, cost_per_trade: float = 0.0) -> float:
+    """
+    Fitness = total_return NET of cost_per_trade, not raw total_return.
+    Threading the cost through fitness (rather than applying it only when
+    reporting the winner afterward) is what lets a non-zero cost actually
+    steer the genetic algorithm toward less frequently trading parameter
+    pairs — see the module docstring's note on this design decision.
+    """
     short_window, long_window = individual
-    return simulate_crossover_strategy(prices, short_window, long_window)["total_return"]
+    return simulate_crossover_strategy(prices, short_window, long_window, cost_per_trade)["total_return"]
 
 
 def _tournament_select(
@@ -97,7 +116,7 @@ def _tournament_select(
     Pick tournament_size individuals at random and return the fittest of
     them. Tournament selection is used rather than roulette-wheel
     selection because strategy total_return can be negative, and
-    roulette-wheel weighting, breaks down
+    roulette-wheel weighting (proportional to raw fitness) breaks down
     once fitness values can be negative or near zero.
     """
     idxs = rng.integers(0, len(population), size=tournament_size)
@@ -156,6 +175,7 @@ def evolve_strategy(
     elite_count: int = DEFAULT_ELITE_COUNT,
     mutation_rate: float = DEFAULT_MUTATION_RATE,
     tournament_size: int = DEFAULT_TOURNAMENT_SIZE,
+    cost_per_trade: float = 0.0,
     seed: Optional[int] = None,
 ) -> dict:
     """
@@ -166,9 +186,15 @@ def evolve_strategy(
     unchanged into the next, so the algorithm's best-found-so-far result
     can never regress between generations.
 
+    cost_per_trade (default 0.0) is passed straight through to the fitness
+    function, so the population evolves toward parameters that are best
+    NET of trading costs, not best in a cost-free world with costs
+    subtracted only when reporting the winner.
+
     Returns {"best_individual": (short_window, long_window),
     "best_fitness": float, "fitness_history": list[float]}, where
-    fitness_history has one entry per generation, a non-decreasing sequence by
+    fitness_history has one entry per generation (the best fitness seen so
+    far as of that generation) — a non-decreasing sequence by
     construction, useful for reporting the algorithm's convergence.
     """
     rng = np.random.default_rng(seed)
@@ -179,7 +205,7 @@ def evolve_strategy(
     best_fitness = float("-inf")
 
     for _ in range(generations):
-        fitnesses = [_fitness(ind, prices) for ind in population]
+        fitnesses = [_fitness(ind, prices, cost_per_trade) for ind in population]
 
         gen_best_idx = int(np.argmax(fitnesses))
         if fitnesses[gen_best_idx] > best_fitness:
@@ -220,13 +246,20 @@ def backtest_ticker(
     history_lookup: Callable[[str], Optional[pd.Series]],
     population_size: int = DEFAULT_POPULATION_SIZE,
     generations: int = DEFAULT_GENERATIONS,
+    cost_per_trade: float = 0.0,
     seed: Optional[int] = None,
 ) -> dict:
     """
     End-to-end genetic-algorithm backtest for a single ticker: fetches one
-    historical price series via history_lookup, evolves the best
-    moving-average crossover parameters found, and compares the evolved
-    strategy's total return against buy-and-hold over the same period.
+    historical price series via history_lookup, evolves the best moving-average crossover
+    parameters found, net of cost_per_trade, if non-zero, and compares
+    the evolved strategy's total return against buy-and-hold over the same
+    period.
+
+    cost_per_trade (default 0.0, cost-free, matching the original
+    behaviour) is passed through to evolve_strategy, so a non-zero value
+    genuinely changes which parameters the algorithm converges to, not
+    just the number reported afterward.
 
     Returns a dict:
       {
@@ -235,15 +268,16 @@ def backtest_ticker(
         "strategy_return": float or None, "benchmark_return": float or None,
         "beat_benchmark": bool or None,
         "num_trades": int or None,
+        "cost_per_trade": float,
         "fitness_history": list[float],
         "note": str or None,
       }
     num_trades is recomputed once, after evolution, by re-simulating the
-    winning (short_window, long_window) pair — this is the number of
-    entries+exits the reported strategy_return actually reflects, useful
-    for showing how "chatty" the evolved strategy is (a wide-window
-    strategy typically trades a handful of times a year; a narrow-window
-    one can trade dozens).
+    winning (short_window, long_window) pair with the same cost_per_trade,
+    this is the number of entries+exits the reported strategy_return
+    actually reflects, useful for showing how "chatty" the evolved
+    strategy is (a wide-window strategy typically trades a handful of
+    times a year; a narrow-window one can trade dozens).
 
     If history could not be retrieved, or has fewer than
     MIN_HISTORY_POINTS usable points, returns a result with the numeric
@@ -253,23 +287,24 @@ def backtest_ticker(
     """
     series = history_lookup(ticker)
     if series is None or len(series) == 0:
-        return _empty_backtest_result(ticker, "price history unavailable")
+        return _empty_backtest_result(ticker, "price history unavailable", cost_per_trade)
     if len(series) < MIN_HISTORY_POINTS:
         return _empty_backtest_result(
-            ticker, f"only {len(series)} data points available (minimum {MIN_HISTORY_POINTS})"
+            ticker, f"only {len(series)} data points available (minimum {MIN_HISTORY_POINTS})", cost_per_trade
         )
 
     evolution = evolve_strategy(
         series,
         population_size=population_size,
         generations=generations,
+        cost_per_trade=cost_per_trade,
         seed=seed,
     )
     short_window, long_window = evolution["best_individual"]
 
     strategy_return = evolution["best_fitness"]
     benchmark_return = compute_buy_and_hold_return(series)
-    final_sim = simulate_crossover_strategy(series, short_window, long_window)
+    final_sim = simulate_crossover_strategy(series, short_window, long_window, cost_per_trade)
 
     return {
         "ticker": ticker,
@@ -279,12 +314,13 @@ def backtest_ticker(
         "benchmark_return": benchmark_return,
         "beat_benchmark": strategy_return > benchmark_return,
         "num_trades": final_sim["num_trades"],
+        "cost_per_trade": cost_per_trade,
         "fitness_history": evolution["fitness_history"],
         "note": None,
     }
 
 
-def _empty_backtest_result(ticker: str, reason: str) -> dict:
+def _empty_backtest_result(ticker: str, reason: str, cost_per_trade: float = 0.0) -> dict:
     return {
         "ticker": ticker,
         "short_window": None,
@@ -293,6 +329,7 @@ def _empty_backtest_result(ticker: str, reason: str) -> dict:
         "benchmark_return": None,
         "beat_benchmark": None,
         "num_trades": None,
+        "cost_per_trade": cost_per_trade,
         "fitness_history": [],
         "note": reason,
     }
