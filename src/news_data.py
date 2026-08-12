@@ -18,6 +18,7 @@ import re
 import requests
 from openai import OpenAI
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from src.finance_lexicon import apply_financial_lexicon_override
 
 NEWSAPI_BASE_URL = "https://newsapi.org/v2/everything"
 NEWSAPI_TIMEOUT = 8  # seconds
@@ -33,10 +34,10 @@ _SUFFIX_RE = re.compile(
 )
 
 EXCLUDED_NOISE_DOMAINS = ",".join([
-    "bringatrailer.com",   
-    "slickdeals.net",      
-    "fark.com",            
-    "freerepublic.com",    
+    "bringatrailer.com",   # classic/collector car auction listings
+    "slickdeals.net",      # consumer deals/coupons, not company news
+    "fark.com",            # link-aggregator/forum, not original reporting
+    "freerepublic.com",    # forum, not original reporting
 ])
 
 
@@ -46,7 +47,8 @@ def _search_phrase(name: str) -> str:
     form actually used in news headlines (e.g. "Ford"), by stripping trailing
     legal-entity suffixes and a leading "The ". Applied in a loop since a
     name can have more than one trailing clause to strip (e.g. "X Inc.,
-    a Delaware Corporation").
+    a Delaware Corporation" — not expected from yfinance in practice, but
+    cheap to handle defensively).
     """
     prev = None
     while prev != name:
@@ -125,7 +127,8 @@ def _filter_relevant_articles(articles: list[dict], company_label: str) -> list[
                 idx = int(tok) - 1
                 if 0 <= idx < len(articles):
                     keep_indices.add(idx)
-        # Fail open on a malformed/empty reply rather than silently returning nothing.
+        # Fail open on a malformed/empty reply (e.g. the model replied with
+        # prose instead of numbers) rather than silently returning nothing.
         if not keep_indices and result != "NONE":
             return articles
         return [a for i, a in enumerate(articles) if i in keep_indices]
@@ -158,7 +161,8 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
         trade press like WWD), too aggressive, discarding good results
         along with the bad.
     Current approach: `qInTitle` with the company name reduced to its short,
-    headline-form name and wrapped in double quotes for an EXACT PHRASE match. This
+    headline-form name (see _search_phrase — "Ford", not "Ford Motor
+    Company") and wrapped in double quotes for an EXACT PHRASE match. This
     requires the literal short name to appear in the headline, which is
     both narrow enough to exclude generic-word false positives and broad
     enough to keep results from any legitimate outlet NewsAPI indexes.
@@ -168,7 +172,7 @@ def get_news_for_company(company_name: str, ticker: str, max_articles: int = 3) 
     short company name can coincide with an unrelated common use of the
     same word, "Ford" in classic-car enthusiast headlines, "Coty" as a
     "Coach/Citizen Of The Year" award acronym. Two more layers handle that,
-    applied in order: `excludeDomains`
+    applied in order: `excludeDomains` (see EXCLUDED_NOISE_DOMAINS above)
     trims specific low-editorial-quality sources observed to produce this
     kind of noise, cheaply and with no API cost; then _filter_relevant_
     articles() makes one LLM call over the surviving candidates to judge
@@ -270,6 +274,7 @@ def build_news_context(news_items: list[dict], include_sentiment: bool = True) -
 
 # Sentiment analysis
 _sentiment_analyzer = SentimentIntensityAnalyzer()
+apply_financial_lexicon_override(_sentiment_analyzer)
 
 # VADER's own documented thresholds for classifying the compound score.
 POSITIVE_THRESHOLD = 0.05
@@ -278,9 +283,21 @@ NEGATIVE_THRESHOLD = -0.05
 
 def score_headline_sentiment(title: str) -> dict:
     """
-    Score a single headline's sentiment using VADER (vaderSentiment), a
-    lexicon- and rule-based sentiment analyzer well-suited to short,
-    informal text like news headlines.
+    Score a single headline's sentiment using VADER, augmented by
+    FINANCIAL_LEXICON_OVERRIDE.
+
+    History, kept for context: manual testing originally found "Apple
+    faces antitrust probe in EU" scoring as neutral (compound 0.0),
+    because none of "faces", "antitrust", or "probe" carried sentiment
+    weight in VADER's general-purpose lexicon, a reader familiar with
+    financial news would recognize this as negative. This specific case
+    is now FIXED by the override ("antitrust" and "probe" were added to
+    it). A different, structural class of error remains open and is not
+    fixable by any lexicon addition: generic words (e.g. "rich", "alert")
+    that are correctly scored in general English but appear in a
+    financial headline in a sense unrelated to company performance, see
+    src/finance_lexicon.py's module docstring for real examples found in
+    manual testing and why this specific class cannot be patched away.
 
     Returns {"compound": float in [-1, 1], "label": "positive"|"neutral"|"negative"}.
     An empty/missing title scores neutral (VADER returns compound 0.0 for
@@ -326,7 +343,7 @@ def summarize_sentiment(scored_items: list[dict]) -> dict:
     Returns {"positive": n, "neutral": n, "negative": n,
     "overall_label": str, "average_compound": float or None}.
     overall_label is the majority label among the three counts; a tie
-    (including a 3-way tie) resolves to "neutral", a deliberately
+    (including a 3-way tie) resolves to "neutral" — a deliberately
     cautious default rather than guessing a direction from an ambiguous
     split. An empty input returns all-zero counts, overall_label
     "neutral", and average_compound None, rather than raising or silently
