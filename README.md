@@ -21,8 +21,8 @@ This repository tracks the incremental development of the system across Phase 2 
 | 0 - Baseline | Simple prototype from preliminary report | ✅ Done |
 | 1 - Multi-ticker + Intent detection | Handle multi-stock queries and open-ended questions | ✅ Done |
 | 2 - NewsAPI + Visualisation | Real-time news and interactive price charts | ✅ Done |
-| 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ✅ Current |
-| 4 - Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ⬜ Planned |
+| 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ✅ Done |
+| 4 - Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ✅ Current |
 | 5 - User testing | 5-participant study, 20-query evaluation | ⬜ Planned |
 | 6 - Final polish | Documentation, refactoring, submission prep | ⬜ Planned |
 
