@@ -21,6 +21,7 @@ independently testable code.
 from dotenv import load_dotenv
 load_dotenv()
 
+import hashlib
 import uuid
 from datetime import date
 
@@ -77,6 +78,42 @@ def _cached_closing_prices(ticker: str):
     return get_closing_prices(ticker)
 
 
+def _stable_seed_for_ticker(ticker: str) -> int:
+    """
+    Deterministic seed derived from the ticker symbol, so the genetic
+    algorithm's random population initialization is reproducible across
+    reruns and sessions for a given ticker, without hardcoding one single
+    seed for every ticker (which would make every ticker's GA start from
+    an identical population before the price data even differs them).
+
+    This exists purely for reproducibility, not to cherry-pick a seed
+    that happens to make the strategy look good, the seed is a fixed,
+    non-adjustable function of the ticker string alone, so there is no
+    opportunity to search for a flattering outcome.
+    """
+    digest = hashlib.sha256(ticker.encode("utf-8")).hexdigest()
+    return int(digest, 16) % (2**32)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_backtest(ticker: str):
+    """
+    Cache the full genetic-algorithm backtest per ticker (not just the
+    underlying price history): the GA itself (30 individuals x 20
+    generations) is the expensive part, not the yfinance call, so caching
+    only _cached_closing_prices left the GA re-evolving from scratch on
+    every call. Combined with _stable_seed_for_ticker, this also means the
+    result shown to the user for a given ticker is stable within the TTL,
+    not just fast.
+    """
+    return backtest_ticker(
+        ticker,
+        get_closing_prices,
+        cost_per_trade=DEFAULT_COST_PER_TRADE,
+        seed=_stable_seed_for_ticker(ticker),
+    )
+
+
 # Iteration 3, inclusive design improvement 
 CHART_COLOR_CLOSE = "#0072B2"  
 CHART_COLOR_MA20 = "#E69F00"   
@@ -110,14 +147,14 @@ def render_price_chart(ticker: str) -> None:
 def render_backtest(ticker: str) -> None:
     """
     Render the genetic-algorithm moving-average-crossover backtest result
-    for a single ticker. Reports the
+    for a single ticker (Iteration 4, src/backtesting.py). Reports the
     evolved strategy's total return against buy-and-hold honestly in both
     directions, never hiding an underperforming result. Silently renders
     nothing if history could not be retrieved or is too short, same
     fail-soft convention as render_price_chart, so a backtest failure
     never blocks the rest of the response.
     """
-    result = backtest_ticker(ticker, get_closing_prices, cost_per_trade=DEFAULT_COST_PER_TRADE)
+    result = _cached_backtest(ticker)
     if result["note"] is not None:
         st.caption(f"Backtest unavailable for {ticker}: {result['note']}")
         return
@@ -141,6 +178,7 @@ def render_backtest(ticker: str) -> None:
     )
 
 
+# Iteration 4: sentiment icon shown next to each headline.
 SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
 
 
