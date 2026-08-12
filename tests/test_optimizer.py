@@ -20,6 +20,9 @@ from src.optimizer import (
     optimize_weights,
     compute_current_weights,
     compute_portfolio_optimization,
+    _assess_history_confidence,
+    LOW_CONFIDENCE_HISTORY_POINTS,
+    IMPOSSIBLE_RETURN_FLOOR,
 )
 
 
@@ -74,6 +77,7 @@ def test_portfolio_performance_matches_manual_calculation_for_two_assets():
     weights = np.array([0.5, 0.5])
     expected_return, expected_volatility = portfolio_performance(weights, mean_returns, cov_matrix)
     assert expected_return == pytest.approx(0.15)
+    # Zero covariance case: variance = w_a^2*var_a + w_b^2*var_b
     assert expected_volatility == pytest.approx(np.sqrt(0.25 * 0.04 + 0.25 * 0.09))
 
 
@@ -105,7 +109,7 @@ def test_optimize_weights_sums_to_one_and_is_long_only():
     result = optimize_weights(mean_returns, cov_matrix)
     total = sum(result["weights"].values())
     assert total == pytest.approx(1.0, abs=1e-4)
-    assert all(w >= -1e-6 for w in result["weights"].values())  # no shorting
+    assert all(w >= -1e-6 for w in result["weights"].values()) 
 
 
 def test_optimize_weights_diversification_does_not_exceed_worse_single_asset_volatility():
@@ -223,3 +227,56 @@ def test_compute_portfolio_optimization_two_good_tickers_returns_full_result():
     assert result["expected_volatility"] is not None
     assert result["sharpe_ratio"] is not None
     assert result["excluded_tickers"] == {}
+    assert result["low_confidence_tickers"] == {}
+	
+
+def test_assess_history_confidence_flags_short_history():
+    series = _price_series(start=100, daily_return=0.0005, days=40, seed=60, noise=0.01)
+    reason = _assess_history_confidence(series)
+    assert reason is not None
+    assert "short window" in reason or "daily returns available" in reason
+
+
+def test_assess_history_confidence_flags_impossible_naive_return():
+    series = _price_series(start=100, daily_return=-0.02, days=100, seed=61, noise=0.0)
+    daily_return_check = compute_daily_returns(series).mean() * 252
+    assert daily_return_check < IMPOSSIBLE_RETURN_FLOOR  # confirm the scenario is set up correctly
+    reason = _assess_history_confidence(series)
+    assert reason is not None
+    assert "impossible" in reason
+
+
+def test_assess_history_confidence_none_for_long_stable_history():
+    series = _price_series(start=100, daily_return=0.0006, days=252, seed=62, noise=0.01)
+    assert _assess_history_confidence(series) is None
+
+
+def test_compute_portfolio_optimization_flags_but_does_not_exclude_low_confidence_ticker():
+    rng = np.random.default_rng(3)
+    days = 35
+    daily_rets = rng.normal(-0.0086, 0.062, days - 1)
+    prices = [100.0]
+    for r in daily_rets:
+        prices.append(prices[-1] * (1 + r))
+    dates = pd.date_range("2026-06-15", periods=days, freq="B")
+    volatile_series = pd.Series(prices, index=dates)
+
+    holdings = [{"ticker": "SPCX", "shares": 1, "purchase_price": 100.0}]
+    result = compute_portfolio_optimization(holdings, history_lookup=lambda t: volatile_series)
+
+    assert "SPCX" not in result["excluded_tickers"]
+    assert "SPCX" in result["low_confidence_tickers"]
+    assert result["suggested_weights"] == {"SPCX": 1.0}
+    assert result["expected_return"] is not None  # still shown, not hidden
+
+
+def test_compute_portfolio_optimization_stable_portfolio_has_no_low_confidence_flags():
+    holdings = [
+        {"ticker": "AAA", "shares": 10, "purchase_price": 5.0},
+        {"ticker": "BBB", "shares": 5, "purchase_price": 20.0},
+    ]
+    a = _price_series(start=100, daily_return=0.0010, days=252, seed=50, noise=0.015)
+    b = _price_series(start=80, daily_return=0.0006, days=252, seed=51, noise=0.02)
+    histories = {"AAA": a, "BBB": b}
+    result = compute_portfolio_optimization(holdings, lambda t: histories[t])
+    assert result["low_confidence_tickers"] == {}

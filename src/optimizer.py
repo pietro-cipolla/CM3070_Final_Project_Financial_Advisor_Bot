@@ -17,7 +17,9 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-MIN_HISTORY_POINTS = 30
+MIN_HISTORY_POINTS = 30       
+LOW_CONFIDENCE_HISTORY_POINTS = 60  
+IMPOSSIBLE_RETURN_FLOOR = -1.0  
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -47,6 +49,52 @@ def annualize_returns_and_covariance(
     mean_returns = daily_returns.mean() * TRADING_DAYS_PER_YEAR
     cov_matrix = daily_returns.cov() * TRADING_DAYS_PER_YEAR
     return mean_returns, cov_matrix
+
+
+def _assess_history_confidence(series: pd.Series) -> Optional[str]:
+    """
+    Judge whether a single ticker's own price history is thick/stable
+    enough to trust its annualized mean-return estimate, independent of
+    any other ticker in the portfolio (this runs on each ticker's own
+    full series, before annualize_returns_and_covariance intersects
+    multiple tickers onto their shared date range).
+
+    Returns a human-readable reason string if the ticker should be
+    flagged as low-confidence, or None if the estimate looks trustworthy.
+
+    Two independent triggers, either one is enough to flag:
+      - Sample size: fewer than LOW_CONFIDENCE_HISTORY_POINTS daily
+        returns. This is a stricter, non-exclusionary bar than
+        MIN_HISTORY_POINTS — the ticker is still included in the
+        optimization (there is no principled reason to throw usable data
+        away entirely), just flagged as resting on a short window.
+      - Implausible magnitude: the naive annualized return (this module's
+        own convention: mean daily return * TRADING_DAYS_PER_YEAR) falls
+        below IMPOSSIBLE_RETURN_FLOOR (-100%), which is mathematically
+        impossible for a long-only holding. This catches cases where
+        volatility alone — not just a short window — breaks the linear
+        annualization convention: found in manual testing on a real,
+        very recently listed, highly volatile stock (SPCX, ~35 trading
+        days), where the naive method produced a -218% "expected annual
+        return" — an artifact of scaling a few volatile weeks into a
+        full year, not a real forecast.
+    """
+    daily_returns = compute_daily_returns(series)
+    if len(daily_returns) < LOW_CONFIDENCE_HISTORY_POINTS:
+        return (
+            f"only {len(daily_returns)} daily returns available (recommended "
+            f"minimum {LOW_CONFIDENCE_HISTORY_POINTS}) — this ticker's estimate "
+            "is based on a short window and may not be reliable"
+        )
+    naive_annual_return = float(daily_returns.mean() * TRADING_DAYS_PER_YEAR)
+    if naive_annual_return < IMPOSSIBLE_RETURN_FLOOR:
+        return (
+            f"this ticker's annualized return estimate ({naive_annual_return * 100:.0f}%) "
+            "is below -100%, which is impossible for a long-only holding — an "
+            "artifact of annualizing a short, highly volatile price window, not "
+            "a real forecast"
+        )
+    return None
 
 
 def portfolio_performance(
@@ -103,7 +151,7 @@ def optimize_weights(
             "sharpe_ratio": sharpe,
             "converged": True,
             "note": (
-                "Only one ticker with usable history, mean-variance optimization "
+                "Only one ticker with usable history — mean-variance optimization "
                 "has no diversification to exploit, so the only long-only, "
                 "fully-invested allocation is 100% in this ticker."
             ),
@@ -148,8 +196,8 @@ def compute_current_weights(
     """
     Market-value weights of the portfolio as it stands today, for
     side-by-side comparison against the suggested weights. Reuses the same
-    price_lookup convention as compute_portfolio_summary in src/portfolio.py.
-    Holdings whose current price is
+    price_lookup convention as compute_portfolio_summary in src/portfolio.py
+    (one call per distinct ticker). Holdings whose current price is
     unavailable are excluded from the weights entirely, never treated as
     zero value (which would silently understate that ticker's true
     allocation).
@@ -190,7 +238,13 @@ def compute_portfolio_optimization(
     Tickers are excluded (and reported in `excluded_tickers`, with a
     reason) rather than silently dropped when: history could not be
     retrieved at all, or fewer than MIN_HISTORY_POINTS usable data points
-    are available.
+    are available. A ticker that clears that hard floor but still looks
+    statistically unreliable (short window and/or a mathematically
+    impossible naive annualized return)
+    is NOT excluded, but is reported in `low_confidence_tickers` with a
+    reason, it stays in the optimization (removing usable data outright
+    has no principled justification), the caveat is just surfaced instead
+    of hidden.
 
     If price_lookup is also supplied, `current_weights` gives the
     portfolio's present market-value allocation for comparison against
@@ -207,11 +261,13 @@ def compute_portfolio_optimization(
         "expected_volatility": float or None,
         "sharpe_ratio": float or None,
         "excluded_tickers": {ticker: reason, ...},
+        "low_confidence_tickers": {ticker: reason, ...},
         "note": str or None,
       }
     """
     distinct_tickers = sorted({h["ticker"] for h in holdings})
     excluded: dict[str, str] = {}
+    low_confidence: dict[str, str] = {}
     price_histories: dict[str, pd.Series] = {}
 
     for ticker in distinct_tickers:
@@ -223,6 +279,9 @@ def compute_portfolio_optimization(
             excluded[ticker] = f"only {len(series)} data points available (minimum {MIN_HISTORY_POINTS})"
             continue
         price_histories[ticker] = series
+        confidence_reason = _assess_history_confidence(series)
+        if confidence_reason:
+            low_confidence[ticker] = confidence_reason
 
     current_weights = compute_current_weights(holdings, price_lookup) if price_lookup else None
 
@@ -234,6 +293,7 @@ def compute_portfolio_optimization(
             "expected_volatility": None,
             "sharpe_ratio": None,
             "excluded_tickers": excluded,
+            "low_confidence_tickers": low_confidence,
             "note": "No holdings had enough usable price history to run the optimization.",
         }
 
@@ -247,5 +307,6 @@ def compute_portfolio_optimization(
         "expected_volatility": result["expected_volatility"],
         "sharpe_ratio": result["sharpe_ratio"],
         "excluded_tickers": excluded,
+        "low_confidence_tickers": low_confidence,
         "note": result["note"],
     }

@@ -330,6 +330,9 @@ with st.sidebar:
                         f"Expected annual volatility: {opt['expected_volatility']*100:.1f}% · "
                         f"Sharpe ratio: {opt['sharpe_ratio']:.2f}"
                     )
+            if opt.get("low_confidence_tickers"):
+                for t, reason in opt["low_confidence_tickers"].items():
+                    st.caption(f"⚠️ Low-confidence estimate for {t}: {reason}")
             if opt["excluded_tickers"]:
                 for t, reason in opt["excluded_tickers"].items():
                     st.caption(f"⚠️ {t} excluded: {reason}")
