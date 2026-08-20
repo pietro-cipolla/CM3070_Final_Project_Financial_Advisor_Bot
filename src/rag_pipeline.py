@@ -23,6 +23,34 @@ MAX_TICKERS = 3
 
 VALID_INTENTS = {"stock_query", "open_ended", "unclear", "portfolio_query"}
 
+# Iteration 4, Sezione 4, Problema 27: how many recent messages of
+# conversation history to pass into the LLM calls below, so implicit
+# follow-up references (e.g. "it", "its main rival") can be resolved
+# against the previous turn instead of being classified as if the
+# conversation had no prior context. Capped rather than unbounded so the
+# prompt sent on every turn doesn't grow with the whole session — a small,
+# fixed window is enough to resolve the immediate-previous-turn references
+# actually seen in manual testing (Nvidia -> "its main rival in GPUs"),
+# and keeps the added prompt length/cost bounded and predictable.
+MAX_HISTORY_MESSAGES = 6
+
+
+def _history_messages(history: list[dict] | None) -> list[dict]:
+    """
+    Normalize a conversation history (as stored in st.session_state.messages
+    — a list of {"role": "user"/"assistant", "content": str} dicts) into the
+    last MAX_HISTORY_MESSAGES entries, in OpenAI chat message format.
+
+    Returns [] for None/empty input, so every caller below that accepts an
+    optional history parameter behaves exactly as it did before this
+    parameter existed when no history is passed — this is what keeps all
+    pre-Problema-27 callers and tests unaffected.
+    """
+    if not history:
+        return []
+    trimmed = history[-MAX_HISTORY_MESSAGES:]
+    return [{"role": m["role"], "content": m["content"]} for m in trimmed]
+
 COMMON_TICKER_FIXES = {
     "FORD": "F",
     "GOOGLE": "GOOGL",
@@ -34,7 +62,7 @@ COMMON_TICKER_FIXES = {
 }
 
 
-def classify_query_intent(query: str) -> str:
+def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     """
     Classify the user's query into one of four intents:
 
@@ -77,8 +105,16 @@ def classify_query_intent(query: str) -> str:
     ticker-extraction miss (rather than a silent misclassification) is what
     surfaces to the user — this keeps failures visible instead of masking
     them behind a generic clarification message.
+
+    Iteration 4 Sezione 4 addition (Problema 27): accepts an optional
+    `history` (recent conversation turns, see _history_messages above), so
+    a follow-up with no explicit company reference of its own can still be
+    classified correctly by looking at what was just discussed, instead of
+    being judged in isolation. Defaults to None so every pre-Problema-27
+    caller/test is unaffected.
     """
     try:
+        history_messages = _history_messages(history)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
@@ -95,19 +131,29 @@ def classify_query_intent(query: str) -> str:
                         "company itself is never named (e.g. 'Should I buy an iPhone "
                         "maker?' implies Apple; 'Is the Windows maker a good buy?' "
                         "implies Microsoft) — classify these as stock_query, not "
-                        "open_ended.\n"
+                        "open_ended. It also includes a follow-up that only makes sense "
+                        "in light of the conversation shown before the final message "
+                        "below (e.g. 'How does it compare to its main rival?' right "
+                        "after discussing a specific company) — classify these as "
+                        "stock_query too, not unclear.\n"
                         "- open_ended: asks for general investing advice with no "
-                        "specific company named OR implied.\n"
+                        "specific company named OR implied, even after considering any "
+                        "conversation shown below.\n"
                         "- portfolio_query: asks about the user's OWN tracked "
                         "portfolio/holdings as a whole, with no specific ticker named "
                         "(e.g. 'How is my portfolio doing?', 'What's my total P&L?', "
                         "'Should I rebalance?'). If a specific ticker IS named "
                         "alongside 'my' (e.g. 'How is my AAPL holding doing?'), use "
                         "stock_query instead.\n"
-                        "- unclear: off-topic, empty, or too ambiguous to act on.\n"
+                        "- unclear: off-topic, empty, or too ambiguous to act on even "
+                        "with the conversation shown below.\n"
+                        "If prior conversation turns are shown before the final "
+                        "message, they are only for resolving references in that final "
+                        "message — classify the final message only.\n"
                         "Reply with ONLY the label, nothing else."
                     ),
                 },
+                *history_messages,
                 {"role": "user", "content": query},
             ],
         )
@@ -127,13 +173,27 @@ def extract_ticker_from_query(query: str) -> str | None:
     return tickers[0] if tickers else None
 
 
-def _extract_all_tickers(query: str) -> list[str]:
+def _extract_all_tickers(query: str, history: list[dict] | None = None) -> list[str]:
     """
     Internal helper: makes the single LLM call used by ticker extraction and
     returns the FULL de-duplicated, corrected list of tickers found — before
     the MAX_TICKERS cap is applied. Both extract_tickers_from_query() and
     extract_tickers_with_truncation_info() build on this so the LLM is only
     called once per query regardless of which public function is used.
+
+    Iteration 4 Sezione 4 addition (Problema 27): accepts an optional
+    `history` (recent conversation turns) so a query with no company of its
+    own — e.g. "How does it compare to its main rival in GPUs?" right after
+    a Nvidia query — can resolve "it" against the company just discussed,
+    instead of always returning [] for a query with no ticker/name of its
+    own. This is the extraction half of the same fix as the history support
+    added to classify_query_intent() above; both were needed, since a query
+    like this was previously misrouted twice over — first by isolated
+    intent classification, then again by isolated ticker extraction. This
+    was the more consequential of the two: even once intent classification
+    is fixed, extraction still needs the same context to name a ticker at
+    all. Defaults to None so every pre-Problema-27 caller/test (which never
+    passed a history argument) is unaffected.
 
     Only companies the user actually named (or unambiguously referenced,
     e.g. by product name) are extracted — the model is explicitly told not
@@ -153,6 +213,17 @@ def _extract_all_tickers(query: str) -> list[str]:
     must be applied once, downstream, by the callers below — never here.
     """
     try:
+        history_messages = _history_messages(history)
+        history_note = (
+            "If prior conversation turns are shown before the final message, use "
+            "them ONLY to resolve pronouns or implicit references in the final "
+            "message (e.g. 'it', 'its main rival', 'the same company') to a "
+            "company actually named earlier — then extract that company's "
+            "ticker. Never pull in an extra company from the conversation history "
+            "that the final message does not itself refer to, implicitly or "
+            "explicitly. "
+            if history_messages else ""
+        )
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
@@ -172,6 +243,7 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "handles any limit on how many are compared at once, and needs "
                         "to know the true full count, so do not cap or truncate your "
                         "answer yourself). "
+                        f"{history_note}"
                         "If you find no companies at all, return NONE — never pad the "
                         "list with a placeholder. "
                         "Always use the REAL stock exchange ticker symbol, never the "
@@ -186,6 +258,7 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "when no ticker at all can be identified."
                     ),
                 },
+                *history_messages,
                 {"role": "user", "content": query},
             ],
         )
@@ -206,7 +279,7 @@ def _extract_all_tickers(query: str) -> list[str]:
         return []
 
 
-def extract_tickers_from_query(query: str) -> list[str]:
+def extract_tickers_from_query(query: str, history: list[dict] | None = None) -> list[str]:
     """
     Use a zero-temperature LLM call to extract up to MAX_TICKERS stock
     tickers from the user's natural language query. Returns a list of
@@ -216,11 +289,17 @@ def extract_tickers_from_query(query: str) -> list[str]:
     know whether the user actually mentioned more companies than the app
     supports (to surface that to the user, rather than silently dropping
     them) should use extract_tickers_with_truncation_info() instead.
+
+    `history` (Iteration 4 Sezione 4, Problema 27): optional recent
+    conversation turns, forwarded to _extract_all_tickers() to resolve
+    implicit follow-up references. Defaults to None, unchanged behavior.
     """
-    return _extract_all_tickers(query)[:MAX_TICKERS]
+    return _extract_all_tickers(query, history)[:MAX_TICKERS]
 
 
-def extract_tickers_with_truncation_info(query: str) -> tuple[list[str], bool]:
+def extract_tickers_with_truncation_info(
+    query: str, history: list[dict] | None = None
+) -> tuple[list[str], bool]:
     """
     Same extraction as extract_tickers_from_query(), but also reports
     whether the query mentioned more companies than MAX_TICKERS supports.
@@ -231,8 +310,12 @@ def extract_tickers_with_truncation_info(query: str) -> tuple[list[str], bool]:
     silently discarding a company — which previously led the LLM to
     fabricate a misleading explanation (e.g. claiming a company's data was
     unavailable when it was simply never requested).
+
+    `history` (Iteration 4 Sezione 4, Problema 27): optional recent
+    conversation turns, forwarded to _extract_all_tickers() to resolve
+    implicit follow-up references. Defaults to None, unchanged behavior.
     """
-    all_tickers = _extract_all_tickers(query)
+    all_tickers = _extract_all_tickers(query, history)
     return all_tickers[:MAX_TICKERS], len(all_tickers) > MAX_TICKERS
 
 
@@ -259,6 +342,7 @@ def build_prompt(
     user_query: str,
     news_context: str = "",
     simplified_mode: bool = False,
+    history: list[dict] | None = None,
 ) -> list[dict]:
     """
     Construct the message list for the OpenAI Chat API.
@@ -277,6 +361,16 @@ def build_prompt(
     Iteration 3: language-matching is always applied; simplified_mode is an
     opt-in flag (default False, so existing callers and tests are
     unaffected) that adds the plain-language instruction above.
+
+    Iteration 4 Sezione 4 addition (Problema 27): an optional `history`
+    (recent conversation turns) is inserted between the system prompt and
+    the current user question, so the final answer itself can also be
+    phrased with awareness of what was just discussed (e.g. an explicit
+    "compared to Nvidia, which you just asked about" instead of reading as
+    a reply with no memory of the conversation) — completing the same fix
+    already applied to intent classification and ticker extraction above.
+    Defaults to None, so every pre-Problema-27 caller/test producing a
+    two-message [system, user] list is unaffected.
     """
     if isinstance(stock_data, list):
         data_context = build_comparative_context(stock_data)
@@ -318,5 +412,6 @@ def build_prompt(
 
     return [
         {"role": "system", "content": system_prompt},
+        *_history_messages(history),
         {"role": "user", "content": user_query},
     ]

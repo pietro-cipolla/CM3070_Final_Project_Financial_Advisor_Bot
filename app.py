@@ -377,12 +377,17 @@ if user_query:
     # Show user message
     with st.chat_message("user"):
         st.write(user_query)
+    # Problema 27 (Iteration 4, Sezione 4): snapshot the conversation as it
+    # stood BEFORE this turn's user message, so it can be passed as
+    # "history" to the LLM calls below without the current query
+    # duplicating itself inside its own history.
+    recent_history = st.session_state.messages[-6:]
     st.session_state.messages.append({"role": "user", "content": user_query})
     save_message(st.session_state.session_id, "user", user_query)
 
     with st.chat_message("assistant"):
         with st.spinner("Understanding your question..."):
-            intent = classify_query_intent(user_query)
+            intent = classify_query_intent(user_query, history=recent_history)
 
         if intent == "unclear":
             response = (
@@ -456,7 +461,7 @@ if user_query:
 
         else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):
-                tickers, truncated = extract_tickers_with_truncation_info(user_query)
+                tickers, truncated = extract_tickers_with_truncation_info(user_query, history=recent_history)
 
                 if truncated:
                     st.info(
@@ -511,7 +516,8 @@ if user_query:
                         news_context = build_news_context(news_items)
 
                         messages = build_prompt(
-                            stock_data, user_query, news_context=news_context, simplified_mode=simplified_mode
+                            stock_data, user_query, news_context=news_context,
+                            simplified_mode=simplified_mode, history=recent_history,
                         )
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
@@ -553,7 +559,8 @@ if user_query:
                         news_context = build_news_context(all_news_items)
 
                         messages = build_prompt(
-                            stock_data_list, user_query, news_context=news_context, simplified_mode=simplified_mode
+                            stock_data_list, user_query, news_context=news_context,
+                            simplified_mode=simplified_mode, history=recent_history,
                         )
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
