@@ -489,15 +489,31 @@ if user_query:
                         st.write(response)
                     else:
                         with st.expander(f"📊 Data retrieved for {tickers[0]}", expanded=True):
+                            # Problema 29 (Iteration 4, Sezione 4): this panel used to
+                            # show a fixed subset of 8 fields, while build_data_context()
+                            # (financial_data.py) already puts dividend yield, beta and
+                            # sector into the same context block the model answers from
+                            # — so the model could correctly cite a real, grounded figure
+                            # (e.g. "dividend yield of 0.61%") that the user had no way to
+                            # verify here, since it simply wasn't shown. Every field the
+                            # model can cite should have a visible check in the same place.
+                            dividend_display = (
+                                f"{round(stock_data['dividend_yield'], 2)}%"
+                                if stock_data.get("dividend_yield")
+                                else "None"
+                            )
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.write(f"**Company:** {stock_data.get('name', tickers[0])}")
                                 st.write(f"**Current price:** ${stock_data.get('price', 'N/A')}")
                                 st.write(f"**Day change:** {stock_data.get('change_pct', 'N/A')}%")
                                 st.write(f"**52-week range:** {stock_data.get('52_week_range', 'N/A')}")
+                                st.write(f"**Sector:** {stock_data.get('sector', 'N/A')}")
                             with col2:
                                 st.write(f"**P/E ratio:** {stock_data.get('pe_ratio', 'N/A')}")
                                 st.write(f"**EPS:** {stock_data.get('eps', 'N/A')}")
+                                st.write(f"**Dividend yield:** {dividend_display}")
+                                st.write(f"**Beta:** {stock_data.get('beta', 'N/A')}")
                                 st.write(f"**Analyst rating:** {stock_data.get('recommendation', 'N/A')}")
                                 st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
                             st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
