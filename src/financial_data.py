@@ -37,14 +37,32 @@ def get_stock_summary(ticker: str) -> dict:
         news_items = stock.news or []
         headlines = [item.get("title", "") for item in news_items[:3] if item.get("title")]
 
+        eps = info.get("trailingEps")
+        pe_ratio = info.get("trailingPE") or info.get("forwardPE")
+        # Problema 28 (Iteration 4, Sezione 4): yfinance's trailingPE can be
+        # computed over a different trailing-earnings window than the
+        # trailingEps figure returned alongside it, so the two can go
+        # mutually inconsistent — most visibly once a company swings to a
+        # net loss, where a mathematically correct P/E (price / negative
+        # EPS) must itself be negative, but trailingPE was observed
+        # returning a large POSITIVE number instead (found on WBD: P/E
+        # 583.38 shown next to EPS -1.28). Rather than pass through a
+        # figure that is numerically present but not a coherent P/E for
+        # this EPS, treat it as untrustworthy whenever EPS is negative —
+        # same "don't silently present a bad number as good" principle
+        # already used for unpriced tickers (portfolio.py) and low-history
+        # MPT estimates (optimizer.py, Problema 25).
+        if eps is not None and eps < 0 and pe_ratio is not None:
+            pe_ratio = "N/A (negative earnings)"
+
         return {
             "ticker": ticker.upper(),
             "name": info.get("longName") or info.get("shortName", ticker.upper()),
             "price": price,
             "change_pct": change_pct,
             "52_week_range": week_range,
-            "pe_ratio": info.get("trailingPE") or info.get("forwardPE"),
-            "eps": info.get("trailingEps"),
+            "pe_ratio": pe_ratio,
+            "eps": eps,
             "beta": info.get("beta"),
             "dividend_yield": info.get("dividendYield"),
             "market_cap": info.get("marketCap"),
@@ -186,8 +204,8 @@ def get_closing_prices(ticker: str, period: str = "1y"):
     """
     Iteration 4 (MPT optimizer and genetic-algorithm backtester). Historical
     closing-price series for a ticker, reusing get_price_history() rather
-    than a separate yfinance call, same "don't duplicate the is-this-a-
-    real-ticker/network logic" principle as get_current_price() reusing
+    than a separate yfinance call — same "don't duplicate the is-this-a-
+    real-ticker / network logic" principle as get_current_price() reusing
     get_stock_summary().
 
     Returns a pandas Series of closing prices indexed by date, or None if

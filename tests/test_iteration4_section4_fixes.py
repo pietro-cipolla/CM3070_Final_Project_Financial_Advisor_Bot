@@ -25,6 +25,7 @@ from src.rag_pipeline import (
     _history_messages,
     MAX_HISTORY_MESSAGES,
 )
+from src.financial_data import get_stock_summary
 
 
 def _mock_completion(content: str) -> MagicMock:
@@ -150,3 +151,57 @@ def test_build_prompt_without_history_unchanged():
     }
     messages = build_prompt(stock_data, "Should I buy Apple?")
     assert len(messages) == 2  # system + current user query only, as before
+
+
+# Problema 28 — P/E ratio incoerente quando l'EPS è negativo
+
+def _mock_ticker_with_info(info: dict) -> MagicMock:
+    mock_ticker = MagicMock()
+    mock_ticker.info = info
+    mock_ticker.news = []
+    return mock_ticker
+
+
+def _wbd_style_info(**overrides) -> dict:
+    info = {
+        "currentPrice": 28.44,
+        "previousClose": 28.00,
+        "fiftyTwoWeekLow": 20.0,
+        "fiftyTwoWeekHigh": 35.0,
+        "trailingPE": 583.38,
+        "trailingEps": -1.28,
+        "beta": 1.5,
+        "dividendYield": None,
+        "marketCap": 1_000_000,
+        "recommendationKey": "hold",
+        "targetMeanPrice": 30.0,
+        "sector": "Communication Services",
+        "longBusinessSummary": "A media company.",
+        "longName": "Warner Bros Discovery",
+    }
+    info.update(overrides)
+    return info
+
+
+def test_get_stock_summary_flags_pe_ratio_when_eps_negative():
+    """
+    Problema 28: yfinance's trailingPE (583.38) and trailingEps (-1.28) were
+    observed mutually inconsistent for WBD — a positive P/E is mathematically
+    impossible with negative earnings. Once EPS is negative, pe_ratio must
+    not be passed through as if it were a trustworthy number.
+    """
+    with patch("src.financial_data.yf.Ticker", return_value=_mock_ticker_with_info(_wbd_style_info())):
+        result = get_stock_summary("WBD")
+    assert result["eps"] == -1.28
+    assert result["pe_ratio"] == "N/A (negative earnings)"
+
+
+def test_get_stock_summary_leaves_pe_ratio_alone_when_eps_positive():
+    """Same code path, positive EPS -> pe_ratio passed through unchanged."""
+    with patch(
+        "src.financial_data.yf.Ticker",
+        return_value=_mock_ticker_with_info(_wbd_style_info(trailingEps=3.18, trailingPE=25.32)),
+    ):
+        result = get_stock_summary("NFLX")
+    assert result["eps"] == 3.18
+    assert result["pe_ratio"] == 25.32
