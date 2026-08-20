@@ -73,6 +73,12 @@ def _cached_current_price(ticker: str):
     return get_current_price(ticker)
 
 
+# Iteration 4: both the backtester and the MPT optimizer need historical
+# closing prices for the same tickers within a single run,
+# cached so the two features never double-fetch from yfinance
+# for the same ticker. A longer TTL than the current-price cache is
+# appropriate: a full year of historical closes does not meaningfully
+# change within a 15 minute window.
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_closing_prices(ticker: str):
     return get_closing_prices(ticker)
@@ -178,7 +184,11 @@ def render_backtest(ticker: str) -> None:
     )
 
 
-# Iteration 4: sentiment icon shown next to each headline.
+# Iteration 4: sentiment icon shown next to each headline. Colour-coded
+# rather than red/green-only, consistent with the colourblind-safe design
+# principle already applied to the price chart in Iteration 3 (a shape/hue
+# combination — traffic-light colours plus distinct positions in the UI —
+# rather than relying on red/green alone to carry meaning).
 SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
 
 
@@ -390,6 +400,59 @@ if user_query:
                 "or up to three to compare (e.g. *'Compare Apple, Microsoft and Google'*)?"
             )
             st.write(response)
+
+        elif intent == "portfolio_query":
+            # Problema 26 (Iteration 4, Sezione 4): reuses the same
+            # compute_portfolio_summary() already used by the sidebar
+            # Portfolio Tracker widget, so a portfolio-level question asked
+            # in chat and the sidebar numbers can never disagree — one
+            # summary, two places it's shown.
+            holdings = get_portfolio(st.session_state.session_id)
+            if not holdings:
+                response = (
+                    "You don't have any holdings tracked yet. Add one from the "
+                    "**💼 Portfolio tracker** panel in the sidebar, then ask me "
+                    "again — for example *'How is my portfolio doing?'*"
+                )
+                st.write(response)
+            else:
+                with st.spinner("Checking your portfolio..."):
+                    summary = compute_portfolio_summary(holdings, _cached_current_price)
+
+                with st.expander("💼 Your portfolio", expanded=True):
+                    for h in summary["holdings"]:
+                        st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
+                        if h["pnl"] is None:
+                            st.caption("⚠️ Current price unavailable — check the ticker symbol.")
+                        else:
+                            indicator = "🟢" if h["pnl"] >= 0 else "🔴"
+                            st.caption(
+                                f"Current: ${h['current_price']:.2f} · "
+                                f"P&L: {indicator} ${h['pnl']:.2f} ({h['pnl_pct']:.1f}%)"
+                            )
+                    if summary["unpriced_tickers"]:
+                        st.caption(
+                            f"Excluded from totals (price unavailable): "
+                            f"{', '.join(summary['unpriced_tickers'])}"
+                        )
+
+                if summary["total_pnl_pct"] is not None:
+                    indicator = "🟢" if summary["total_pnl"] >= 0 else "🔴"
+                    response = (
+                        f"Your portfolio ({len(summary['holdings'])} holding"
+                        f"{'s' if len(summary['holdings']) != 1 else ''}) is at "
+                        f"{indicator} **${summary['total_pnl']:.2f} "
+                        f"({summary['total_pnl_pct']:.1f}%)** total P&L. "
+                        "See the breakdown above, or check the **🎯 Suggested "
+                        "rebalancing** panel in the sidebar for allocation advice. "
+                        "This is not financial advice."
+                    )
+                else:
+                    response = (
+                        "I couldn't compute a total P&L for your portfolio right now "
+                        "— see the per-holding breakdown above for what's available."
+                    )
+                st.write(response)
 
         else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):

@@ -1,9 +1,9 @@
 """
 rag_pipeline.py
-RAG Pipeline layer, query intent classification, ticker extraction and
+RAG Pipeline layer — query intent classification, ticker extraction and
 prompt construction.
 
-Iteration 1 additions:
+Iteration 1 additions (Preliminary Report, Table 4.2 — HIGH priority items):
   1. Multi-ticker extraction: a query can now reference up to 3 companies
      (e.g. "Compare Apple, Microsoft and Google"), instead of only the first
      ticker found.
@@ -21,8 +21,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_TICKERS = 3
 
-VALID_INTENTS = {"stock_query", "open_ended", "unclear"}
-
+VALID_INTENTS = {"stock_query", "open_ended", "unclear", "portfolio_query"}
 
 COMMON_TICKER_FIXES = {
     "FORD": "F",
@@ -37,9 +36,9 @@ COMMON_TICKER_FIXES = {
 
 def classify_query_intent(query: str) -> str:
     """
-    Classify the user's query into one of three intents:
+    Classify the user's query into one of four intents:
 
-      - "stock_query":  the query names or clearly implies specific
+      - "stock_query":     the query names or clearly implies specific
                          company/companies (e.g. "What is Tesla's P/E?",
                          "Compare AAPL and MSFT", or a product/brand name
                          that unambiguously points to one company, e.g.
@@ -48,16 +47,31 @@ def classify_query_intent(query: str) -> str:
                          without naming or implying a specific stock (e.g.
                          "What should I invest in?", "Is now a good time to
                          buy stocks?").
+      - "portfolio_query": the query asks about the user's OWN tracked
+                         holdings as a whole, without naming a specific
+                         ticker to look up (e.g. "How is my portfolio
+                         doing?", "What's my P&L?", "Should I rebalance?").
+                         Naming a specific ticker together with "my" (e.g.
+                         "How is my AAPL holding doing?") still counts as
+                         stock_query — this label is only for questions
+                         about the portfolio as a whole.
       - "unclear":       the query is off-topic, empty of financial meaning,
                          or too ambiguous to act on.
 
-    Note: this prompt must recognize product/brand
+     Note: this prompt must recognize product/brand
     references the same way the ticker extractor's prompt does (see
     _extract_all_tickers below). An earlier version only mentioned "clearly
     implies" without an example, and in practice the model classified
     product-reference queries like "Should I buy an iPhone maker?" as
     open_ended instead of stock_query, which routed them to a generic
     clarification message and never gave the ticker extractor a chance to run at all. The explicit example below keeps the two prompts' behavior consistent.
+
+    Iteration 4 Sezione 4 addition (Problema 26): before this label existed,
+    any portfolio-level question with no named ticker fell through to
+    "unclear" and got the generic clarification fallback, even though
+    app.py already has all the data needed to answer it via
+    compute_portfolio_summary() — the intent classifier (Iteration 1) and
+    the Portfolio Tracker (Iteration 3) had simply never been connected.
 
     Defaults to "stock_query" on classification failure, so a downstream
     ticker-extraction miss (rather than a silent misclassification) is what
@@ -74,7 +88,7 @@ def classify_query_intent(query: str) -> str:
                     "role": "system",
                     "content": (
                         "Classify the user's financial query into exactly one label: "
-                        "stock_query, open_ended, or unclear.\n"
+                        "stock_query, open_ended, portfolio_query, or unclear.\n"
                         "- stock_query: names or clearly implies one or more specific "
                         "companies/tickers. This includes an unambiguous product or "
                         "brand reference that points to one company, even if the "
@@ -84,6 +98,12 @@ def classify_query_intent(query: str) -> str:
                         "open_ended.\n"
                         "- open_ended: asks for general investing advice with no "
                         "specific company named OR implied.\n"
+                        "- portfolio_query: asks about the user's OWN tracked "
+                        "portfolio/holdings as a whole, with no specific ticker named "
+                        "(e.g. 'How is my portfolio doing?', 'What's my total P&L?', "
+                        "'Should I rebalance?'). If a specific ticker IS named "
+                        "alongside 'my' (e.g. 'How is my AAPL holding doing?'), use "
+                        "stock_query instead.\n"
                         "- unclear: off-topic, empty, or too ambiguous to act on.\n"
                         "Reply with ONLY the label, nothing else."
                     ),
@@ -110,21 +130,22 @@ def extract_ticker_from_query(query: str) -> str | None:
 def _extract_all_tickers(query: str) -> list[str]:
     """
     Internal helper: makes the single LLM call used by ticker extraction and
-    returns the FULL de-duplicated, corrected list of tickers found, before
+    returns the FULL de-duplicated, corrected list of tickers found — before
     the MAX_TICKERS cap is applied. Both extract_tickers_from_query() and
     extract_tickers_with_truncation_info() build on this so the LLM is only
     called once per query regardless of which public function is used.
 
-    Only companies the user actually named are extracted, the model is explicitly told not
+    Only companies the user actually named (or unambiguously referenced,
+    e.g. by product name) are extracted — the model is explicitly told not
     to add extra competitors or "for comparison" companies that were never
     mentioned, since that produced unrequested results such as adding GM to
     a "Compare Tesla and Ford" query.
 
     IMPORTANT: the extraction prompt below must NOT itself cap the result at
     MAX_TICKERS. An earlier version told the model to extract "up to a
-    maximum of 3", which made the model self-truncate during extraction,
+    maximum of 3", which made the model self-truncate during extraction —
     so this function never actually returned more than 3 tickers, even when
-    the user named 4 or more companies. That silently broke the truncation
+    the user named 4+ companies. That silently broke the truncation
     notice: extract_tickers_with_truncation_info() detects truncation by
     checking len(all_tickers) > MAX_TICKERS on THIS function's output, so if
     the model already capped it at 3, that check can never fire and the
@@ -143,8 +164,9 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "You are a financial ticker extractor. "
                         "Given a user query, identify stock ticker symbols ONLY for "
                         "companies explicitly named or unambiguously referenced in the "
-                        "query itself. Do not add competitors, related companies, or "
-                        "any other company for context or comparison purposes, extract "
+                        "query itself (e.g. a product name like 'iPhone' clearly "
+                        "implies Apple). Do NOT add competitors, related companies, or "
+                        "any other company for context or comparison purposes — extract "
                         "every company the user actually mentioned, with NO upper limit "
                         "on how many you return (a separate step outside your control "
                         "handles any limit on how many are compared at once, and needs "
@@ -153,7 +175,10 @@ def _extract_all_tickers(query: str) -> list[str]:
                         "If you find no companies at all, return NONE — never pad the "
                         "list with a placeholder. "
                         "Always use the REAL stock exchange ticker symbol, never the "
-                        "company name written in capital letters. "
+                        "company name written in capital letters. For example: Ford "
+                        "Motor Company's ticker is F, not FORD; Alphabet/Google's "
+                        "ticker is GOOGL, not GOOGLE or ALPHABET; Meta/Facebook's "
+                        "ticker is META, not FACEBOOK. "
                         "Reply with ONLY a comma-separated list of uppercase ticker "
                         "symbols (e.g. 'AAPL,MSFT,GOOGL'), with no spaces and no "
                         "other text. The word NONE must appear only as the entire "

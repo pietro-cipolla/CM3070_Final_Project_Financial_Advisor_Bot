@@ -162,6 +162,18 @@ def test_classify_intent_case_insensitive():
         assert classify_query_intent("Tell me about MSFT") == "stock_query"
 
 
+def test_classify_intent_portfolio_query():
+    """
+    Iteration 4, Sezione 4, Problema 26: a portfolio-level question with no
+    named ticker (e.g. "How is my portfolio doing?") must be classified as
+    portfolio_query, not fall through to unclear/open_ended, so app.py can
+    route it to compute_portfolio_summary() instead of the generic
+    clarification fallback.
+    """
+    with patch("src.rag_pipeline.client.chat.completions.create", return_value=_mock_completion("portfolio_query")):
+        assert classify_query_intent("How is my portfolio doing?") == "portfolio_query"
+
+
 # build_prompt dispatch (single vs. multi-ticker)
 
 def test_build_prompt_single_ticker_dict():
