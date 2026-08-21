@@ -27,9 +27,27 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 _CANDIDATE_MULTIPLIER = 3
 
+# Problema 32 (Iteration 4, Sezione 4): this regex originally only covered
+# English-language legal suffixes, so a company whose yfinance longName
+# uses a foreign one (e.g. "Pirelli & C. S.p.A.") was never shortened at
+# all — the full legal name was then sent to NewsAPI as an exact-phrase
+# search (_search_phrase below), which no real headline ever matches
+# verbatim, so the news search silently returned zero results even though
+# the ticker and financial data were correct (confirmed on Pirelli, which
+# only surfaced once the ISP/ING Groep ticker mismatch of Problema 30 was
+# ruled out as the cause). Extended with common non-English suffixes;
+# applied in the same strip-until-stable loop below, so a name with more
+# than one trailing clause (e.g. "Pirelli & C. S.p.A." -> strip "S.p.A."
+# -> "Pirelli & C." -> strip "& C." -> "Pirelli") is fully reduced, not
+# just partially.
 _SUFFIX_RE = re.compile(
-    r"[,]?\s+(Inc\.?|Corp\.?|Corporation|Co\.?|Company|Ltd\.?|Limited|PLC|"
-    r"Holdings|Motor Company|Group)\s*$",
+    r"[,]?\s+("
+    r"Inc\.?|Corp\.?|Corporation|Co\.?|Company|Ltd\.?|Limited|PLC|"
+    r"Holdings|Motor Company|Group|"
+    r"S\.p\.A\.?|SpA|S\.r\.l\.?|Srl|S\.A\.?|SA|SAS|AG|GmbH|NV|BV|"
+    r"A/S|ASA|Oyj|AB|K\.K\.?|KK|"
+    r"&\s*C\.?"
+    r")\s*$",
     re.IGNORECASE,
 )
 

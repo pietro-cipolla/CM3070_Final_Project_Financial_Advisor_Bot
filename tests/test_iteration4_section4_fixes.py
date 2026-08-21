@@ -205,3 +205,60 @@ def test_get_stock_summary_leaves_pe_ratio_alone_when_eps_positive():
         result = get_stock_summary("NFLX")
     assert result["eps"] == 3.18
     assert result["pe_ratio"] == 25.32
+
+
+# Problema 30 — ticker non-USA risolti senza suffisso di borsa
+
+def test_extract_tickers_preserves_exchange_suffix():
+    """
+    Problema 30: a bare non-US symbol (e.g. "ISP" for Intesa Sanpaolo) was
+    observed resolving to a completely unrelated company on Yahoo Finance
+    (ING Groep NV). Once the model returns a suffixed symbol (e.g.
+    "ISP.MI"), the extraction pipeline must preserve it rather than
+    stripping anything after the "." (the "." must survive the existing
+    comma-split/alpha-first-char filtering unchanged).
+    """
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("ISP.MI"),
+    ):
+        result = extract_tickers_from_query("Cosa ne pensi di Intesa Sanpaolo?")
+    assert result == ["ISP.MI"]
+
+
+def test_extract_tickers_prompt_instructs_exchange_suffixes():
+    """The fix itself: the extraction prompt must tell the model to include
+    the correct Yahoo Finance exchange suffix for non-US companies, with a
+    concrete example, rather than leaving suffix handling to the model's
+    unguided judgement (which worked for Pirelli but not Intesa Sanpaolo —
+    see Diario Tecnico, Problema 30)."""
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("ISP.MI"),
+    ) as mock_create:
+        extract_tickers_from_query("Cosa ne pensi di Intesa Sanpaolo?")
+    system_content = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "exchange suffix" in system_content
+    assert "ISP.MI" in system_content
+
+
+# Problema 32 — notizie assenti per suffissi legali esteri non riconosciuti
+
+def test_search_phrase_strips_foreign_legal_suffixes():
+    """
+    Problema 32: _SUFFIX_RE only recognized English legal suffixes, so a
+    yfinance longName like "Pirelli & C. S.p.A." was passed to NewsAPI
+    whole (no real headline matches that verbatim), returning zero news
+    results even though the ticker/financial data were correct. Both
+    trailing clauses must now be stripped, applied in a loop.
+    """
+    from src.news_data import _search_phrase
+
+    assert _search_phrase("Pirelli & C. S.p.A.") == "Pirelli"
+    assert _search_phrase("Intesa Sanpaolo S.p.A.") == "Intesa Sanpaolo"
+    assert _search_phrase("Volkswagen AG") == "Volkswagen"
+    assert _search_phrase("Siemens Healthineers AG") == "Siemens Healthineers"
+    assert _search_phrase("L'Oreal SA") == "L'Oreal"
+    # English suffixes (pre-existing behavior) must still work unchanged.
+    assert _search_phrase("Ford Motor Company") == "Ford"
+    assert _search_phrase("Apple Inc.") == "Apple"
