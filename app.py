@@ -73,6 +73,31 @@ def _cached_current_price(ticker: str):
     return get_current_price(ticker)
 
 
+def _reconcile_price_with_cache(stock_data: dict, ticker: str) -> dict:
+    """
+    Problema 33 (Iteration 4, Sezione 4): get_stock_summary() always makes
+    a fresh live fetch, while the Portfolio Tracker sidebar uses
+    _cached_current_price() (@st.cache_data(ttl=60)) for the same ticker —
+    within the same rerun these can legitimately return slightly different
+    prices a few seconds/cents apart, but were being shown side by side
+    with no indication they were two different snapshots (found on UBER:
+    $78.3801 in the "Data retrieved" panel vs $78.39 in the sidebar, with a
+    P&L that then didn't reconcile against either rounded number shown).
+    Rather than surface the timing gap, this makes the "Data retrieved"/
+    comparison panel adopt the SAME cached price the sidebar uses whenever
+    it's available, so the two can never disagree within one rerun — the
+    figure the LLM reasons from and the figure shown in both panels all
+    come from the one cached call. Falls back to stock_data's own
+    just-fetched price if the cached lookup itself returns None (e.g. a
+    transient failure on the second call), rather than losing a price
+    outright.
+    """
+    cached_price = _cached_current_price(ticker)
+    if cached_price is not None:
+        stock_data["price"] = cached_price
+    return stock_data
+
+
 # Iteration 4: both the backtester and the MPT optimizer need historical
 # closing prices for the same tickers within a single run,
 # cached so the two features never double-fetch from yfinance
@@ -511,6 +536,7 @@ if user_query:
                         )
                         st.write(response)
                     else:
+                        stock_data = _reconcile_price_with_cache(stock_data, tickers[0])
                         with st.expander(f"📊 Data retrieved for {tickers[0]}", expanded=True):
                             # Problema 29 (Iteration 4, Sezione 4): this panel used to
                             # show a fixed subset of 8 fields, while build_data_context()
@@ -563,7 +589,10 @@ if user_query:
 
                 else:  # multi-ticker comparative path (2 or 3 tickers)
                     stock_data_list = get_multiple_stock_summaries(tickers)
-                    valid = [d for d in stock_data_list if "error" not in d]
+                    valid = [
+                        _reconcile_price_with_cache(d, d["ticker"])
+                        for d in stock_data_list if "error" not in d
+                    ]
                     failed = [d for d in stock_data_list if "error" in d]
 
                     with st.expander(f"📊 Data retrieved for {', '.join(tickers)}", expanded=True):
