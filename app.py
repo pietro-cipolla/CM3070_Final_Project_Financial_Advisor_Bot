@@ -125,15 +125,37 @@ CHART_COLOR_CLOSE = "#0072B2"
 CHART_COLOR_MA20 = "#E69F00"   
 
 
+MIN_CHART_POINTS = 5  # Problema 31: below this, a line chart is not meaningful
+
+
 def render_price_chart(ticker: str) -> None:
     """
     Render a Plotly line chart of closing price + 20-day moving average
     (MA20) for the last 3 months. Silently renders nothing if history could
     not be retrieved, so a charting failure never blocks the rest of the
     response.
+
+    Problema 31 (Iteration 4, Sezione 4): when the retrieved history is
+    down to 1-2 points (e.g. a very recently listed or thinly-traded
+    ticker), Plotly's auto-detected x-axis tick granularity could fall back
+    to a sub-second format ("23:59:59.999") instead of a date, because the
+    axis was never given an explicit tickformat and had to guess one from
+    an almost-degenerate date range. Two independent fixes: (a) an explicit
+    day-level tickformat, so the axis never guesses a sub-day granularity
+    regardless of how narrow the date range is; (b) a minimum point count
+    below which the chart isn't rendered at all — a 1-2 point "line" chart
+    isn't informative even with a fixed axis, so a caption explaining why
+    is more honest than a chart that looks like real data.
     """
     hist = get_price_history(ticker)
     if hist is None or hist.empty:
+        return
+    if len(hist) < MIN_CHART_POINTS:
+        st.caption(
+            f"Not enough price history to chart {ticker} "
+            f"({len(hist)} data point{'s' if len(hist) != 1 else ''} available, "
+            f"minimum {MIN_CHART_POINTS})."
+        )
         return
 
     fig = go.Figure()
@@ -146,6 +168,7 @@ def render_price_chart(ticker: str) -> None:
         height=320,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(tickformat="%b %d"),
     )
     st.plotly_chart(fig, use_container_width=True)
 
