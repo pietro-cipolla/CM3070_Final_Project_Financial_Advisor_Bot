@@ -1,5 +1,4 @@
 """
-database.py
 Persistence layer — Iteration 3.
 
 Adds the project's first persistent state: conversation memory across
@@ -24,6 +23,7 @@ Design notes:
     a numeric id.
 """
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import date
@@ -42,6 +42,24 @@ def _connect(db_path: str):
         conn.close()
 
 
+def _json_default(obj):
+    """
+    json.dumps() fallback for objects that aren't natively JSON-serializable.
+
+    Problema 34 (Iteration 4, Sezione 4): message attachments can contain
+    numpy scalar types surfaced from the genetic-algorithm backtester (e.g.
+    np.int64, np.float64 inside a backtest result dict) — these are not
+    handled by the stdlib json encoder. numpy scalars all expose a zero-arg
+    .item() method that returns the equivalent native Python type, so that
+    is tried first; anything else falls back to str() rather than raising,
+    since a slightly-lossy persisted attachment is preferable to losing the
+    whole message's rich content because one nested field couldn't encode.
+    """
+    if hasattr(obj, "item"):
+        return obj.item()
+    return str(obj)
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """
     Create the conversations and portfolio tables if they do not already
@@ -55,10 +73,21 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                attachments TEXT,
                 timestamp TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
+        # Problema 34: pre-existing DBs created before this fix won't have
+        # the attachments column (CREATE TABLE IF NOT EXISTS is a no-op on
+        # them), so migrate it in explicitly rather than only handling the
+        # fresh-DB case — same idempotent-migration approach as the rest of
+        # this module's "safe to call on every app startup" contract.
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(conversations)")
+        }
+        if "attachments" not in existing_columns:
+            conn.execute("ALTER TABLE conversations ADD COLUMN attachments TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS portfolio (
@@ -82,12 +111,40 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
 # Conversation memory
 
-def save_message(session_id: str, role: str, content: str, db_path: str = DEFAULT_DB_PATH) -> None:
-    """Persist a single chat message for a session."""
+def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    db_path: str = DEFAULT_DB_PATH,
+    attachments: dict | None = None,
+) -> None:
+    """
+    Persist a single chat message for a session.
+
+    Problema 34 (Iteration 4, Sezione 4): attachments is the structured data
+    behind a message's rich content (retrieved stock data, backtest result,
+    news items, or portfolio summary — see app.py's _render_message_attachments
+    dispatcher), JSON-serialized here so it survives both an app restart and
+    any same-session Streamlit rerun, not just kept as a local variable that
+    vanishes once the script re-executes. None (the default) covers plain
+    messages with no rich content, and is stored as SQL NULL, not the string
+    "null".
+
+    attachments is deliberately added AFTER db_path (not before it) so that
+    every pre-existing call site that passes db_path positionally — e.g.
+    save_message(session_id, role, content, db_path), all over
+    test_iteration3.py — keeps landing db_path in the db_path parameter
+    rather than silently shifting it into attachments. app.py's own new
+    call site passes attachments=... by keyword, so it is unaffected by
+    this ordering either way.
+    """
+    serialized = (
+        json.dumps(attachments, default=_json_default) if attachments is not None else None
+    )
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, role, content),
+            "INSERT INTO conversations (session_id, role, content, attachments) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, serialized),
         )
 
 
@@ -95,13 +152,31 @@ def load_conversation(session_id: str, db_path: str = DEFAULT_DB_PATH) -> list[d
     """
     Return the full message history for a session, oldest first, in the
     same {"role": ..., "content": ...} shape used by st.session_state.messages.
+
+    Problema 34 (Iteration 4, Sezione 4): a message saved with attachments
+    also gets an "attachments" key holding the parsed dict. That key is
+    deliberately OMITTED (not set to None) for messages saved without
+    attachments — both plain messages saved after this fix and every
+    message saved before it (their attachments column is NULL) — so the
+    returned shape for those rows is byte-for-byte the same
+    {"role": ..., "content": ...} dict as before this fix, and every
+    pre-existing equality assertion against that exact shape (see
+    test_iteration3.py) keeps passing unmodified. Callers that want rich
+    content use msg.get("attachments"), which is None either way whether
+    the key is absent or explicitly None.
     """
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT role, content FROM conversations WHERE session_id = ? ORDER BY id ASC",
+            "SELECT role, content, attachments FROM conversations WHERE session_id = ? ORDER BY id ASC",
             (session_id,),
         ).fetchall()
-    return [{"role": row["role"], "content": row["content"]} for row in rows]
+    messages = []
+    for row in rows:
+        message = {"role": row["role"], "content": row["content"]}
+        if row["attachments"]:
+            message["attachments"] = json.loads(row["attachments"])
+        messages.append(message)
+    return messages
 
 
 def clear_conversation(session_id: str, db_path: str = DEFAULT_DB_PATH) -> None:
@@ -125,7 +200,8 @@ def add_holding(
 
     Raises ValueError for non-positive shares or purchase_price, or for a
     purchase_date in the future, rather than silently storing a nonsensical
-    holding, callers (the UI layer) are expected to catch this and show
+    holding (e.g. 0 shares, a negative price from a typo, or a trade dated
+    tomorrow) — callers (the UI layer) are expected to catch this and show
     a friendly message rather than letting a bad row into the DB.
 
     The future-date check is a defence-in-depth measure, not the only

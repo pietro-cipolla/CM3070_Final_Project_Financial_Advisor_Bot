@@ -198,17 +198,17 @@ def render_price_chart(ticker: str) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_backtest(ticker: str) -> None:
+def _render_backtest_result(ticker: str, result: dict) -> None:
     """
-    Render the genetic-algorithm moving-average-crossover backtest result
-    for a single ticker (Iteration 4, src/backtesting.py). Reports the
-    evolved strategy's total return against buy-and-hold honestly in both
-    directions, never hiding an underperforming result. Silently renders
-    nothing if history could not be retrieved or is too short, same
-    fail-soft convention as render_price_chart, so a backtest failure
-    never blocks the rest of the response.
+    Render an already-computed backtest result dict (extracted from
+    render_backtest's body — Problema 34, Iteration 4 Sezione 4 — so a
+    result FROZEN from a past turn, restored from persisted attachments
+    after a restart, can be rendered through the exact same code as a
+    freshly-computed one, instead of re-running the genetic algorithm
+    against whatever price data happens to be available now, which is not
+    guaranteed to reproduce the original result bit-for-bit across a
+    restart — see the clarification note on Problema 24).
     """
-    result = _cached_backtest(ticker)
     if result["note"] is not None:
         st.caption(f"Backtest unavailable for {ticker}: {result['note']}")
         return
@@ -230,6 +230,25 @@ def render_backtest(ticker: str) -> None:
         "not a real broker's actual spread/commission/slippage). "
         "Past performance does not guarantee future results — this is not financial advice."
     )
+
+
+def render_backtest(ticker: str) -> None:
+    """
+    Render the genetic-algorithm moving-average-crossover backtest result
+    for a single ticker (Iteration 4, src/backtesting.py). Reports the
+    evolved strategy's total return against buy-and-hold honestly in both
+    directions, never hiding an underperforming result. Silently renders
+    nothing if history could not be retrieved or is too short, same
+    fail-soft convention as render_price_chart, so a backtest failure
+    never blocks the rest of the response.
+
+    Thin wrapper kept for backward compatibility and for any caller that
+    wants "compute + render" in one call; the live chat turn below calls
+    _cached_backtest() and _render_backtest_result() separately instead,
+    so it can also persist the computed result dict as an attachment.
+    """
+    result = _cached_backtest(ticker)
+    _render_backtest_result(ticker, result)
 
 
 # Iteration 4: sentiment icon shown next to each headline. Colour-coded
@@ -257,6 +276,130 @@ def render_news(news_items: list[dict], ticker: str) -> None:
         date = item["published_at"][:10] if item.get("published_at") else ""
         icon = SENTIMENT_ICONS.get(item.get("sentiment_label"), "⚪")
         st.markdown(f"{icon} [{item['title']}]({item['url']}) — *{item['source']}, {date}*")
+
+
+def _render_news_expander(ticker: str, news_items: list[dict]) -> None:
+    """Wraps render_news() in its expander, only if there's anything to
+    show — same condition already used inline at both call sites before
+    this was extracted (Problema 34)."""
+    if news_items:
+        with st.expander(f"📰 Recent news — {ticker}", expanded=False):
+            render_news(news_items, ticker)
+
+
+def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
+    """
+    Render the "Data retrieved" expander (+ price chart) for a single
+    ticker. Extracted from the live chat-turn body (Problema 34, Iteration
+    4 Sezione 4) so the exact same rendering can be reused both live and
+    when reconstructing a past turn from persisted attachments after a
+    restart — one implementation that structurally cannot drift between
+    the two call sites, unlike the original inline-only version.
+    """
+    with st.expander(f"📊 Data retrieved for {ticker}", expanded=True):
+        # Problema 29: dividend yield, beta and sector are also in the RAG
+        # context the model answers from (build_data_context) — shown here
+        # too so every field the model can cite has a visible check.
+        dividend_display = (
+            f"{round(stock_data['dividend_yield'], 2)}%"
+            if stock_data.get("dividend_yield")
+            else "None"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Company:** {stock_data.get('name', ticker)}")
+            st.write(f"**Current price:** ${stock_data.get('price', 'N/A')}")
+            st.write(f"**Day change:** {stock_data.get('change_pct', 'N/A')}%")
+            st.write(f"**52-week range:** {stock_data.get('52_week_range', 'N/A')}")
+            st.write(f"**Sector:** {stock_data.get('sector', 'N/A')}")
+        with col2:
+            st.write(f"**P/E ratio:** {stock_data.get('pe_ratio', 'N/A')}")
+            st.write(f"**EPS:** {stock_data.get('eps', 'N/A')}")
+            st.write(f"**Dividend yield:** {dividend_display}")
+            st.write(f"**Beta:** {stock_data.get('beta', 'N/A')}")
+            st.write(f"**Analyst rating:** {stock_data.get('recommendation', 'N/A')}")
+            st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
+        st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
+
+        # Problema 34: on a restored past turn this shows the CURRENT price
+        # history, not a frozen snapshot of what the chart looked like at
+        # the time — a deliberate, documented scope limit (freezing a full
+        # OHLC series as JSON per message would bloat the DB significantly
+        # for comparatively little value versus the frozen numeric panel,
+        # backtest and news above), not an oversight.
+        render_price_chart(ticker)
+
+
+def _render_multi_ticker_data_panel(tickers: list[str], valid: list[dict], failed: list[dict]) -> None:
+    """Render the "Data retrieved" expander for the multi-ticker
+    comparative path. Extracted for the same reason as
+    _render_single_ticker_data_panel above (Problema 34)."""
+    with st.expander(f"📊 Data retrieved for {', '.join(tickers)}", expanded=True):
+        for stock_data in valid:
+            st.write(f"**{stock_data['ticker']} — {stock_data.get('name', '')}**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"Price: ${stock_data.get('price', 'N/A')}")
+                st.write(f"Day change: {stock_data.get('change_pct', 'N/A')}%")
+            with col2:
+                st.write(f"P/E ratio: {stock_data.get('pe_ratio', 'N/A')}")
+                st.write(f"Analyst rating: {stock_data.get('recommendation', 'N/A')}")
+            st.divider()
+        for stock_data in failed:
+            st.warning(f"⚠️ Could not retrieve data for {stock_data['ticker']}: {stock_data['error']}")
+
+
+def _render_portfolio_summary_panel(summary: dict) -> None:
+    """Render the "Your portfolio" expander (Problema 26). Extracted so a
+    past portfolio_query turn can also be reconstructed after a restart
+    (Problema 34) instead of only ever showing this once, live."""
+    with st.expander("💼 Your portfolio", expanded=True):
+        for h in summary["holdings"]:
+            st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
+            if h["pnl"] is None:
+                st.caption("⚠️ Current price unavailable — check the ticker symbol.")
+            else:
+                indicator = "🟢" if h["pnl"] >= 0 else "🔴"
+                st.caption(
+                    f"Current: ${h['current_price']:.2f} · "
+                    f"P&L: {indicator} ${h['pnl']:.2f} ({h['pnl_pct']:.1f}%)"
+                )
+        if summary["unpriced_tickers"]:
+            st.caption(
+                f"Excluded from totals (price unavailable): "
+                f"{', '.join(summary['unpriced_tickers'])}"
+            )
+
+
+def _render_message_attachments(attachments: dict) -> None:
+    """
+    Problema 34 (Iteration 4, Sezione 4): reconstruct the rich expanders
+    (data panel, backtest, news, portfolio summary) for a past assistant
+    turn restored from SQLite after an app restart, from the JSON
+    "attachments" persisted alongside that message's plain text — instead
+    of the restored history showing text only, with every chart/backtest/
+    data/news box silently gone, as it did before this fix (the bug was
+    found via the user's own intuition during Test 4.6, then confirmed by
+    reading save_message()/the history-restore loop in the source).
+
+    Dispatches on attachments["kind"], set when the attachment was saved
+    (see the chat turn below). Deliberately silent (no-op) on an unknown
+    or missing "kind" — attachments are always a strict *addition* to the
+    plain text already restored, so a forward-compatibility gap here must
+    never raise or block the rest of the history from rendering.
+    """
+    kind = attachments.get("kind")
+    if kind == "single_ticker":
+        _render_single_ticker_data_panel(attachments["ticker"], attachments["stock_data"])
+        with st.expander(f"🧬 Strategy backtest — {attachments['ticker']}", expanded=False):
+            _render_backtest_result(attachments["ticker"], attachments["backtest"])
+        _render_news_expander(attachments["ticker"], attachments["news_items"])
+    elif kind == "multi_ticker":
+        _render_multi_ticker_data_panel(attachments["tickers"], attachments["valid"], attachments["failed"])
+        for ticker, items in attachments["news_items_by_ticker"].items():
+            _render_news_expander(ticker, items)
+    elif kind == "portfolio_summary":
+        _render_portfolio_summary_panel(attachments["summary"])
 
 
 # Page config
@@ -412,9 +555,24 @@ with st.sidebar:
 st.title("📈 Financial Advisor Bot")
 
 # Display conversation history
+# Problema 34 (Iteration 4, Sezione 4): this loop used to write only
+# msg["content"] — the plain text — so EVERY past turn's rich content
+# (data panel, backtest, news, price chart) was gone on any rerun other
+# than the one that generated it, whether that rerun was triggered by an
+# app restart (the scenario Test 4.6 targeted) or, as already documented
+# as a known limitation before this fix, by any other same-session
+# interaction (e.g. adding a portfolio holding from the sidebar). Both
+# had the same root cause: the rich content only ever existed as local
+# Python variables during the turn's own rerun, never carried forward —
+# not even in st.session_state, let alone SQLite. Reconstructing it here
+# from msg["attachments"] (present both for messages loaded from SQLite
+# after a restart, and for ones appended earlier in the same live
+# session — see the chat turn below) fixes both cases at once.
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
+        if msg.get("attachments"):
+            _render_message_attachments(msg["attachments"])
 
 # Chat input
 user_query = st.chat_input(
@@ -434,6 +592,14 @@ if user_query:
     save_message(st.session_state.session_id, "user", user_query)
 
     with st.chat_message("assistant"):
+        # Problema 34 (Iteration 4, Sezione 4): whatever this turn produces
+        # beyond plain text — a data panel, a backtest, news, a portfolio
+        # summary — is captured here as a JSON-safe dict and persisted
+        # alongside the message text, instead of only existing as local
+        # variables for the duration of this rerun. None for a turn with no
+        # rich content (unclear/open_ended/error/no-data responses).
+        attachments = None
+
         with st.spinner("Understanding your question..."):
             intent = classify_query_intent(user_query, history=recent_history)
 
@@ -472,22 +638,8 @@ if user_query:
                 with st.spinner("Checking your portfolio..."):
                     summary = compute_portfolio_summary(holdings, _cached_current_price)
 
-                with st.expander("💼 Your portfolio", expanded=True):
-                    for h in summary["holdings"]:
-                        st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
-                        if h["pnl"] is None:
-                            st.caption("⚠️ Current price unavailable — check the ticker symbol.")
-                        else:
-                            indicator = "🟢" if h["pnl"] >= 0 else "🔴"
-                            st.caption(
-                                f"Current: ${h['current_price']:.2f} · "
-                                f"P&L: {indicator} ${h['pnl']:.2f} ({h['pnl_pct']:.1f}%)"
-                            )
-                    if summary["unpriced_tickers"]:
-                        st.caption(
-                            f"Excluded from totals (price unavailable): "
-                            f"{', '.join(summary['unpriced_tickers'])}"
-                        )
+                _render_portfolio_summary_panel(summary)
+                attachments = {"kind": "portfolio_summary", "summary": summary}
 
                 if summary["total_pnl_pct"] is not None:
                     indicator = "🟢" if summary["total_pnl"] >= 0 else "🔴"
@@ -537,48 +689,25 @@ if user_query:
                         st.write(response)
                     else:
                         stock_data = _reconcile_price_with_cache(stock_data, tickers[0])
-                        with st.expander(f"📊 Data retrieved for {tickers[0]}", expanded=True):
-                            # Problema 29 (Iteration 4, Sezione 4): this panel used to
-                            # show a fixed subset of 8 fields, while build_data_context()
-                            # (financial_data.py) already puts dividend yield, beta and
-                            # sector into the same context block the model answers from
-                            # — so the model could correctly cite a real, grounded figure
-                            # (e.g. "dividend yield of 0.61%") that the user had no way to
-                            # verify here, since it simply wasn't shown. Every field the
-                            # model can cite should have a visible check in the same place.
-                            dividend_display = (
-                                f"{round(stock_data['dividend_yield'], 2)}%"
-                                if stock_data.get("dividend_yield")
-                                else "None"
-                            )
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write(f"**Company:** {stock_data.get('name', tickers[0])}")
-                                st.write(f"**Current price:** ${stock_data.get('price', 'N/A')}")
-                                st.write(f"**Day change:** {stock_data.get('change_pct', 'N/A')}%")
-                                st.write(f"**52-week range:** {stock_data.get('52_week_range', 'N/A')}")
-                                st.write(f"**Sector:** {stock_data.get('sector', 'N/A')}")
-                            with col2:
-                                st.write(f"**P/E ratio:** {stock_data.get('pe_ratio', 'N/A')}")
-                                st.write(f"**EPS:** {stock_data.get('eps', 'N/A')}")
-                                st.write(f"**Dividend yield:** {dividend_display}")
-                                st.write(f"**Beta:** {stock_data.get('beta', 'N/A')}")
-                                st.write(f"**Analyst rating:** {stock_data.get('recommendation', 'N/A')}")
-                                st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
-                            st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
-
-                            render_price_chart(tickers[0])
+                        _render_single_ticker_data_panel(tickers[0], stock_data)
 
                         with st.expander(f"🧬 Strategy backtest — {tickers[0]}", expanded=False):
                             with st.spinner("Evolving strategy parameters..."):
-                                render_backtest(tickers[0])
+                                backtest_result = _cached_backtest(tickers[0])
+                                _render_backtest_result(tickers[0], backtest_result)
 
                         with st.spinner("Fetching recent news..."):
                             news_items = get_news_for_company(stock_data.get("name"), tickers[0])
-                        if news_items:
-                            with st.expander(f"📰 Recent news — {tickers[0]}", expanded=False):
-                                render_news(news_items, tickers[0])
+                        _render_news_expander(tickers[0], news_items)
                         news_context = build_news_context(news_items)
+
+                        attachments = {
+                            "kind": "single_ticker",
+                            "ticker": tickers[0],
+                            "stock_data": stock_data,
+                            "backtest": backtest_result,
+                            "news_items": news_items,
+                        }
 
                         messages = build_prompt(
                             stock_data, user_query, news_context=news_context,
@@ -595,19 +724,7 @@ if user_query:
                     ]
                     failed = [d for d in stock_data_list if "error" in d]
 
-                    with st.expander(f"📊 Data retrieved for {', '.join(tickers)}", expanded=True):
-                        for stock_data in valid:
-                            st.write(f"**{stock_data['ticker']} — {stock_data.get('name', '')}**")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write(f"Price: ${stock_data.get('price', 'N/A')}")
-                                st.write(f"Day change: {stock_data.get('change_pct', 'N/A')}%")
-                            with col2:
-                                st.write(f"P/E ratio: {stock_data.get('pe_ratio', 'N/A')}")
-                                st.write(f"Analyst rating: {stock_data.get('recommendation', 'N/A')}")
-                            st.divider()
-                        for stock_data in failed:
-                            st.warning(f"⚠️ Could not retrieve data for {stock_data['ticker']}: {stock_data['error']}")
+                    _render_multi_ticker_data_panel(tickers, valid, failed)
 
                     if not valid:
                         response = (
@@ -617,14 +734,22 @@ if user_query:
                         st.write(response)
                     else:
                         all_news_items = []
+                        news_items_by_ticker = {}
                         with st.spinner("Fetching recent news..."):
                             for stock_data in valid:
                                 items = get_news_for_company(stock_data.get("name"), stock_data["ticker"])
                                 all_news_items.extend(items)
-                                if items:
-                                    with st.expander(f"📰 Recent news — {stock_data['ticker']}", expanded=False):
-                                        render_news(items, stock_data["ticker"])
+                                news_items_by_ticker[stock_data["ticker"]] = items
+                                _render_news_expander(stock_data["ticker"], items)
                         news_context = build_news_context(all_news_items)
+
+                        attachments = {
+                            "kind": "multi_ticker",
+                            "tickers": [d["ticker"] for d in valid],
+                            "valid": valid,
+                            "failed": failed,
+                            "news_items_by_ticker": news_items_by_ticker,
+                        }
 
                         messages = build_prompt(
                             stock_data_list, user_query, news_context=news_context,
@@ -633,5 +758,7 @@ if user_query:
                         response = escape_dollars(get_advice(messages))
                         st.write(response)
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        save_message(st.session_state.session_id, "assistant", response)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": response, "attachments": attachments}
+        )
+        save_message(st.session_state.session_id, "assistant", response, attachments=attachments)

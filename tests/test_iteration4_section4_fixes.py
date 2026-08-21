@@ -1,22 +1,12 @@
 """
 tests/test_iteration4_section4_fixes.py
-Automated tests for the fix block that followed Iteration 4's Sezione 4
-end-to-end manual testing (20 agosto 2026, Problemi 26-34 — see the Diario
-Tecnico in the planning document for the full write-up of each).
-
-Kept as a separate file from test_iteration1.py/test_iteration2.py/etc.
-because these fixes span multiple modules and were all found by the same
-end-to-end testing pass, rather than belonging to one iteration's original
-feature set — mirrors how test_optimizer.py was kept separate from
-test_iteration4.py for the same kind of reason.
-
-One or two tests per problem are added here as each fix is implemented and
-packaged as its own dated commit (commit12 onward); this file grows
-incrementally across that block of commits, the same way test_iteration1.py
-grew across Iteration 1's own fix commits.
+Automated tests for the fix block after Iteration 4
 """
 
+import sqlite3
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 from src.rag_pipeline import (
     extract_tickers_from_query,
@@ -26,6 +16,14 @@ from src.rag_pipeline import (
     MAX_HISTORY_MESSAGES,
 )
 from src.financial_data import get_stock_summary
+from src.database import init_db, save_message, load_conversation, _json_default
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    path = str(tmp_path / "test_financial_advisor.db")
+    init_db(path)
+    return path
 
 
 def _mock_completion(content: str) -> MagicMock:
@@ -34,9 +32,6 @@ def _mock_completion(content: str) -> MagicMock:
     mock_response.choices[0].message.content = content
     return mock_response
 
-
-# Problema 27 — conversation history support (classify_query_intent,
-# extract_tickers_from_query/_extract_all_tickers, build_prompt)
 
 def test_history_messages_empty_for_none_and_empty_list():
     assert _history_messages(None) == []
@@ -59,12 +54,12 @@ def test_history_messages_caps_at_max_and_strips_extra_keys():
 
 def test_extract_tickers_forwards_history_to_the_api_call():
     """
-    Problema 27: a follow-up query with no company of its own (e.g. "How
+    Problem 27: a follow-up query with no company of its own (e.g. "How
     does it compare to its main rival in GPUs?" right after a Nvidia
     question) must have the prior turns forwarded into the OpenAI call, so
-    the model has a chance to resolve "it" — this test asserts the history
-    is actually sent, not that the (mocked) model resolves it correctly,
-    since that reasoning happens inside the real LLM, not in this code.
+    the model has a chance to resolve "it", this test asserts the history
+    is actually sent, not that the model resolves it correctly,
+    since that reasoning happens inside the real LLM.
     """
     history = [
         {"role": "user", "content": "Tell me about Nvidia"},
@@ -84,7 +79,6 @@ def test_extract_tickers_forwards_history_to_the_api_call():
         "role": "assistant",
         "content": "Nvidia (NVDA) is a leading GPU maker...",
     } in sent_messages
-    # History must come between the system message and the current query.
     assert sent_messages[0]["role"] == "system"
     assert sent_messages[-1] == {
         "role": "user",
@@ -93,7 +87,7 @@ def test_extract_tickers_forwards_history_to_the_api_call():
 
 
 def test_extract_tickers_without_history_unchanged():
-    """No history passed (the pre-Problema-27 call shape) -> unaffected."""
+    """No history passed, unaffected."""
     with patch(
         "src.rag_pipeline.client.chat.completions.create",
         return_value=_mock_completion("AAPL"),
@@ -153,8 +147,6 @@ def test_build_prompt_without_history_unchanged():
     assert len(messages) == 2  # system + current user query only, as before
 
 
-# Problema 28 — P/E ratio incoerente quando l'EPS è negativo
-
 def _mock_ticker_with_info(info: dict) -> MagicMock:
     mock_ticker = MagicMock()
     mock_ticker.info = info
@@ -185,10 +177,10 @@ def _wbd_style_info(**overrides) -> dict:
 
 def test_get_stock_summary_flags_pe_ratio_when_eps_negative():
     """
-    Problema 28: yfinance's trailingPE (583.38) and trailingEps (-1.28) were
-    observed mutually inconsistent for WBD — a positive P/E is mathematically
+    yfinance's trailingPE (583.38) and trailingEps (-1.28) were
+    observed mutually inconsistent for WBD, a positive P/E is mathematically
     impossible with negative earnings. Once EPS is negative, pe_ratio must
-    not be passed through as if it were a trustworthy number.
+    not be passed through as if it were a number that can be trusted.
     """
     with patch("src.financial_data.yf.Ticker", return_value=_mock_ticker_with_info(_wbd_style_info())):
         result = get_stock_summary("WBD")
@@ -207,15 +199,13 @@ def test_get_stock_summary_leaves_pe_ratio_alone_when_eps_positive():
     assert result["pe_ratio"] == 25.32
 
 
-# Problema 30 — ticker non-USA risolti senza suffisso di borsa
-
 def test_extract_tickers_preserves_exchange_suffix():
     """
-    Problema 30: a bare non-US symbol (e.g. "ISP" for Intesa Sanpaolo) was
+    A bare non-US symbol (such as "ISP" for Intesa Sanpaolo) was
     observed resolving to a completely unrelated company on Yahoo Finance
     (ING Groep NV). Once the model returns a suffixed symbol (e.g.
-    "ISP.MI"), the extraction pipeline must preserve it rather than
-    stripping anything after the "." (the "." must survive the existing
+    "ISP.MI"), the extraction pipeline must preserve it instead of
+    stripping anything after the "." (the "." have to survive the existing
     comma-split/alpha-first-char filtering unchanged).
     """
     with patch(
@@ -227,11 +217,10 @@ def test_extract_tickers_preserves_exchange_suffix():
 
 
 def test_extract_tickers_prompt_instructs_exchange_suffixes():
-    """The fix itself: the extraction prompt must tell the model to include
+    """The fix itself: the extraction prompt have to tell the model to include
     the correct Yahoo Finance exchange suffix for non-US companies, with a
-    concrete example, rather than leaving suffix handling to the model's
-    unguided judgement (which worked for Pirelli but not Intesa Sanpaolo —
-    see Diario Tecnico, Problema 30)."""
+    concrete example, instead of leaving suffix handling to the model's
+    unguided judgement."""
     with patch(
         "src.rag_pipeline.client.chat.completions.create",
         return_value=_mock_completion("ISP.MI"),
@@ -241,14 +230,11 @@ def test_extract_tickers_prompt_instructs_exchange_suffixes():
     assert "exchange suffix" in system_content
     assert "ISP.MI" in system_content
 
-
-# Problema 32 — notizie assenti per suffissi legali esteri non riconosciuti
-
 def test_search_phrase_strips_foreign_legal_suffixes():
     """
-    Problema 32: _SUFFIX_RE only recognized English legal suffixes, so a
+    _SUFFIX_RE only recognized English legal suffixes, so a
     yfinance longName like "Pirelli & C. S.p.A." was passed to NewsAPI
-    whole (no real headline matches that verbatim), returning zero news
+    whole, returning zero news
     results even though the ticker/financial data were correct. Both
     trailing clauses must now be stripped, applied in a loop.
     """
@@ -259,6 +245,106 @@ def test_search_phrase_strips_foreign_legal_suffixes():
     assert _search_phrase("Volkswagen AG") == "Volkswagen"
     assert _search_phrase("Siemens Healthineers AG") == "Siemens Healthineers"
     assert _search_phrase("L'Oreal SA") == "L'Oreal"
-    # English suffixes (pre-existing behavior) must still work unchanged.
     assert _search_phrase("Ford Motor Company") == "Ford"
     assert _search_phrase("Apple Inc.") == "Apple"
+
+def test_save_and_load_message_round_trips_attachments(db_path):
+    """
+	a message's rich content (stock data, backtest, news,
+    portfolio summary) must survive being written to SQLite and read back,
+    not just exist as a local Python variable during one Streamlit rerun.
+    """
+    attachments = {
+        "kind": "single_ticker",
+        "ticker": "AAPL",
+        "stock_data": {"ticker": "AAPL", "price": 200.5},
+        "backtest": {"total_return_pct": 12.3, "num_trades": 4},
+        "news_items": [{"title": "Apple unveils..."}],
+    }
+    save_message("session-a", "assistant", "Here's Apple.", db_path, attachments=attachments)
+    history = load_conversation("session-a", db_path)
+    assert len(history) == 1
+    assert history[0]["attachments"] == attachments
+
+
+def test_load_conversation_omits_attachments_key_when_none(db_path):
+    """
+    A message saved without attachments must come back in exactly the old
+    {"role", "content"} shape (no "attachments": None key) so that every
+    pre-existing equality assertion in test_iteration3.py, written before
+    this fix existed, keeps passing unmodified.
+    """
+    save_message("session-a", "user", "hi", db_path)
+    history = load_conversation("session-a", db_path)
+    assert history == [{"role": "user", "content": "hi"}]
+    assert "attachments" not in history[0]
+
+
+def test_save_message_still_accepts_db_path_positionally(db_path):
+    """
+    attachments was added AFTER db_path in the signature specifically so
+    that pre-existing positional calls like
+    save_message(session_id, role, content, db_path) keep working, this
+    guards against a future refactor accidentally reordering the params.
+    """
+    save_message("session-a", "user", "positional db_path still works", db_path)
+    history = load_conversation("session-a", db_path)
+    assert history == [{"role": "user", "content": "positional db_path still works"}]
+
+
+def test_json_default_uses_item_method_for_numpy_like_scalars():
+    """
+    _json_default is the json.dumps() fallback used when persisting
+    attachments (the GA backtester can surface np.int64/np.float64 inside a
+    result dict). Instead of depending on numpy in this test, a minimal
+    stand-in with the same .item() contract numpy scalars expose is used.
+    """
+    class _NumpyLikeScalar:
+        def item(self):
+            return 42
+
+    assert _json_default(_NumpyLikeScalar()) == 42
+
+
+def test_json_default_falls_back_to_str_for_other_objects():
+    class _NoItemMethod:
+        def __str__(self):
+            return "custom-object"
+
+    assert _json_default(_NoItemMethod()) == "custom-object"
+
+
+def test_init_db_migrates_attachments_column_into_pre_existing_db(tmp_path):
+    """
+    A DB created before a fix for schema without the attachments
+    column  problem must still work once the app is upgraded, CREATE TABLE IF NOT
+    EXISTS alone is a no-op on it, so init_db() must also migrate the
+    column into the pre-existing table rather than assuming every DB it
+    opens was created fresh with the new schema.
+    """
+    path = str(tmp_path / "pre_existing.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(path)  # must not raise, and must add the missing column
+
+    columns = {row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(conversations)")}
+    assert "attachments" in columns
+
+    # And the migrated DB must be immediately usable for save/load.
+    save_message("session-a", "user", "hello after migration", path)
+    assert load_conversation("session-a", path) == [
+        {"role": "user", "content": "hello after migration"}
+    ]
