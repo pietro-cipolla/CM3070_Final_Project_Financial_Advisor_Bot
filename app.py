@@ -35,7 +35,7 @@ from src.financial_data import (
     get_current_price,
     get_closing_prices,
 )
-from src.rag_pipeline import classify_query_intent, extract_tickers_with_truncation_info, build_prompt, MAX_TICKERS
+from src.rag_pipeline import classify_query_intent, extract_ticker_candidates, build_prompt, MAX_TICKERS
 from src.advisor import get_advice
 from src.news_data import get_news_for_company, build_news_context, score_news_sentiment
 from src.database import (
@@ -661,7 +661,18 @@ if user_query:
 
         else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):
-                tickers, truncated = extract_tickers_with_truncation_info(user_query, history=recent_history)
+                # Problema 38 (Iteration 4, Sezione 4): extract_ticker_candidates()
+                # returns {"ticker", "name"} pairs instead of bare ticker strings,
+                # so the company name the LLM associated with each ticker guess
+                # can be forwarded as get_stock_summary()/get_multiple_stock_
+                # summaries()'s expected_name(s) — this is what lets a
+                # wrong-and-nonexistent guess (e.g. "PT.MI" for Poste Italiane)
+                # self-correct via a live company-name search. tickers/truncated
+                # below are derived from the same pairs, so every existing
+                # display/branching line further down is unaffected.
+                ticker_candidates, truncated = extract_ticker_candidates(user_query, history=recent_history)
+                tickers = [c["ticker"] for c in ticker_candidates]
+                name_hints = {c["ticker"]: c["name"] for c in ticker_candidates if c["name"]}
 
                 if truncated:
                     st.info(
@@ -679,7 +690,7 @@ if user_query:
                     st.write(response)
 
                 elif len(tickers) == 1:
-                    stock_data = get_stock_summary(tickers[0])
+                    stock_data = get_stock_summary(tickers[0], expected_name=name_hints.get(tickers[0]))
 
                     if "error" in stock_data:
                         response = (
@@ -688,22 +699,35 @@ if user_query:
                         )
                         st.write(response)
                     else:
-                        stock_data = _reconcile_price_with_cache(stock_data, tickers[0])
-                        _render_single_ticker_data_panel(tickers[0], stock_data)
+                        # Problema 38: use the RESOLVED ticker (stock_data["ticker"])
+                        # for every downstream call below, not the original
+                        # tickers[0] guess — if get_stock_summary() had to correct
+                        # the guess (Problema 37/38), tickers[0] is the wrong
+                        # symbol that already failed once; the cache lookup,
+                        # backtest and news search all need the symbol that
+                        # actually has data, or they independently fail again
+                        # even though the data panel above now shows the right
+                        # company. This was a latent gap already present before
+                        # this fix (the retry only ever benefited get_stock_
+                        # summary()'s own return value), just never exercised
+                        # end-to-end until a correction actually happened.
+                        resolved_ticker = stock_data["ticker"]
+                        stock_data = _reconcile_price_with_cache(stock_data, resolved_ticker)
+                        _render_single_ticker_data_panel(resolved_ticker, stock_data)
 
-                        with st.expander(f"🧬 Strategy backtest — {tickers[0]}", expanded=False):
+                        with st.expander(f"🧬 Strategy backtest — {resolved_ticker}", expanded=False):
                             with st.spinner("Evolving strategy parameters..."):
-                                backtest_result = _cached_backtest(tickers[0])
-                                _render_backtest_result(tickers[0], backtest_result)
+                                backtest_result = _cached_backtest(resolved_ticker)
+                                _render_backtest_result(resolved_ticker, backtest_result)
 
                         with st.spinner("Fetching recent news..."):
-                            news_items = get_news_for_company(stock_data.get("name"), tickers[0])
-                        _render_news_expander(tickers[0], news_items)
+                            news_items = get_news_for_company(stock_data.get("name"), resolved_ticker)
+                        _render_news_expander(resolved_ticker, news_items)
                         news_context = build_news_context(news_items)
 
                         attachments = {
                             "kind": "single_ticker",
-                            "ticker": tickers[0],
+                            "ticker": resolved_ticker,
                             "stock_data": stock_data,
                             "backtest": backtest_result,
                             "news_items": news_items,
@@ -717,7 +741,7 @@ if user_query:
                         st.write(response)
 
                 else:  # multi-ticker comparative path (2 or 3 tickers)
-                    stock_data_list = get_multiple_stock_summaries(tickers)
+                    stock_data_list = get_multiple_stock_summaries(tickers, expected_names=name_hints)
                     valid = [
                         _reconcile_price_with_cache(d, d["ticker"])
                         for d in stock_data_list if "error" not in d

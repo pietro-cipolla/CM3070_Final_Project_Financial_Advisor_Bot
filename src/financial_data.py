@@ -12,18 +12,149 @@ from datetime import datetime
 MAX_TICKERS = 3
 
 
-def get_stock_summary(ticker: str) -> dict:
+def resolve_ticker(candidate: str) -> str:
+    """
+    Iteration 4, Sezione 4 (Problema 37): resolve a company name or an
+    imperfect/partial ticker guess to a real Yahoo Finance symbol using
+    yfinance's own search index, instead of depending on the LLM extractor
+    (rag_pipeline.py) to recall every non-US exchange suffix from memory —
+    the previous approach (a short hardcoded example list in the extraction
+    prompt, plus COMMON_TICKER_FIXES) only ever covered the handful of
+    companies someone thought to add as examples.
+
+    yf.Search() is the same fuzzy company/ticker search that powers the
+    Yahoo Finance website's own search box, so it returns the correctly
+    exchange-suffixed symbol for any global market without a manually
+    maintained table. This is used here as a FALLBACK/RESOLUTION step, not
+    a replacement for the LLM: the LLM is still what turns natural language
+    into a candidate company name or ticker guess (a task it already does
+    well); yf.Search() is only responsible for turning that candidate into
+    a real, correctly-suffixed symbol.
+
+    Returns the resolved uppercase symbol from the first search result, or
+    the uppercased candidate UNCHANGED if the search fails or returns no
+    usable quote (network error, no match, or a candidate that is already
+    a correct symbol yf.Search does not happen to return first) — this
+    function never raises and never returns an empty string, so callers
+    can always fall back to trying the original candidate as-is.
+    """
+    try:
+        search = yf.Search(candidate, max_results=5)
+        for quote in search.quotes or []:
+            symbol = quote.get("symbol")
+            if symbol:
+                return symbol.upper()
+    except Exception:
+        pass
+    return candidate.upper()
+
+
+def _has_price_data(info: dict | None) -> bool:
+    """Shared check for whether a yfinance `.info` dict represents a real,
+    priced instrument. Factored out so the Problema 38 name-based retry
+    below can reuse the exact same condition as the original ticker-based
+    checks, instead of a second, potentially drifting copy of it."""
+    return bool(info) and (
+        info.get("regularMarketPrice") is not None or info.get("currentPrice") is not None
+    )
+
+
+def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     """
     Fetch key financial data for a single ticker symbol.
     Returns a flat dictionary of data points, or {'error': '...'} on failure.
+
+    Problema 37 (Iteration 4, Sezione 4): if the symbol as given does not
+    resolve directly, this now retries once via resolve_ticker() before
+    giving up — this is what lets an already-correct but less common
+    symbol (e.g. "PST.MI"), or a name/guess the direct yf.Ticker lookup
+    can't handle, still succeed. Callers see no change to the function's
+    contract (same success shape, same {'error': ...} shape on failure);
+    the only difference is what happens internally between the first failed
+    lookup and the final error being returned.
+
+    Problema 38 (Iteration 4, Sezione 4): if an `expected_name` hint is also
+    given (the company name paired with this ticker during extraction —
+    see rag_pipeline.extract_ticker_candidates), it is tried as a SECOND,
+    independent resolution path, tried ONLY once the ticker as given has
+    already failed to find any priced data at all. Searching yfinance by
+    the actual company name rather than by a ticker guess already shown
+    not to work is what lets a wrong-AND-nonexistent guess self-correct
+    (confirmed case: "PT.MI" guessed for Poste Italiane, where "PST.MI"
+    was the real symbol). The same path applies identically to any
+    market, including a hypothetical wrong-and-nonexistent US guess, with
+    no per-company table.
+
+    Ordering (revised after a confirmed live failure — see below):
+    the NAME-based candidate (resolve_ticker(expected_name)) is tried
+    BEFORE the ticker-based one (resolve_ticker(ticker)), not after.
+    Originally the ticker-based fallback was tried first and the name
+    fallback was only a last resort if that also came up empty. That
+    order silently broke on a real, confirmed case: Block, Inc. traded
+    as "SQ" on NYSE until its symbol changed to "XYZ" in January 2025;
+    the LLM extractor (general knowledge, not live-updated) still
+    guesses "SQ". A direct yf.Ticker("SQ") lookup correctly fails (no
+    price data under that symbol any more) — but resolve_ticker("SQ")
+    then fuzzy-matches, via yf.Search()'s free-text index, an entirely
+    unrelated company: Bristol-Myers Squibb ("BMY"), apparently because
+    "Squibb" textually contains "SQ". That match DOES have real price
+    data, so under the old ordering the code accepted it as a success
+    and never even tried resolve_ticker("Block, Inc."), which would have
+    found the real, current symbol ("XYZ"). A short, already-shown-not-
+    to-work ticker string is weaker search evidence than the actual
+    company name once the direct lookup has failed — trying the name
+    first fixes this without adding any new risk: this whole block is
+    still only reached after the DIRECT lookup has already failed, so a
+    ticker that resolves immediately (any market, including Google/
+    Facebook below) never reaches either fallback and is unaffected.
+
+    Deliberately NOT extended to re-validate a ticker that already
+    resolves successfully on the very first attempt: an earlier version
+    of this fix considered comparing the returned company name against
+    expected_name on every successful lookup too (which would also close
+    the older, still-open Problema 30 residual — a wrong ticker that DOES
+    have data on its OWN first try, e.g. "ISP" resolving to ING Groep NV
+    instead of Intesa Sanpaolo, never revalidated by this fix). That was
+    deliberately not implemented: a generic name-similarity check cannot
+    distinguish "wrong company" from a legitimate brand/legal-name
+    mismatch that already exists in this same codebase (a user asking
+    about "Google" or "Facebook" gets back "Alphabet Inc."/"Meta
+    Platforms, Inc." from yfinance — see COMMON_TICKER_FIXES, Problema
+    12) — applying it universally would trade a rare, unconfirmed failure
+    mode for a new, guaranteed one on two of the most common queries this
+    app receives. So the Problema 30 "wrong-but-existing-on-first-try"
+    case remains an explicitly documented residual limitation (see
+    Diario Tecnico, Problema 38); what changed here is narrower — it is
+    the SECOND-stage resolution (already past a failed direct lookup)
+    that now prefers the name over a demonstrably-unreliable ticker
+    string, not a new check on first-try successes.
     """
     try:
-        stock = yf.Ticker(ticker.upper())
+        resolved_ticker = ticker.upper()
+        stock = yf.Ticker(resolved_ticker)
         info = stock.info
 
         # Validate that we received a real ticker
-        if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            return {"error": f"No data found for ticker '{ticker}'. It may be delisted or invalid."}
+        if not _has_price_data(info):
+            if expected_name:
+                name_fallback_symbol = resolve_ticker(expected_name)
+                if name_fallback_symbol and name_fallback_symbol != resolved_ticker:
+                    candidate_stock = yf.Ticker(name_fallback_symbol)
+                    candidate_info = candidate_stock.info
+                    if _has_price_data(candidate_info):
+                        resolved_ticker = name_fallback_symbol
+                        stock = candidate_stock
+                        info = candidate_info
+
+            if not _has_price_data(info):
+                fallback_symbol = resolve_ticker(ticker)
+                if fallback_symbol and fallback_symbol != resolved_ticker:
+                    resolved_ticker = fallback_symbol
+                    stock = yf.Ticker(resolved_ticker)
+                    info = stock.info
+
+            if not _has_price_data(info):
+                return {"error": f"No data found for ticker '{ticker}'. It may be delisted or invalid."}
 
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
@@ -56,8 +187,8 @@ def get_stock_summary(ticker: str) -> dict:
             pe_ratio = "N/A (negative earnings)"
 
         return {
-            "ticker": ticker.upper(),
-            "name": info.get("longName") or info.get("shortName", ticker.upper()),
+            "ticker": resolved_ticker,
+            "name": info.get("longName") or info.get("shortName", resolved_ticker),
             "price": price,
             "change_pct": change_pct,
             "52_week_range": week_range,
@@ -99,16 +230,31 @@ def get_price_history(ticker: str, period: str = "3mo"):
         return None
 
 
-def get_multiple_stock_summaries(tickers: list[str]) -> list[dict]:
+def get_multiple_stock_summaries(
+    tickers: list[str], expected_names: dict[str, str] | None = None
+) -> list[dict]:
     """
     Fetch stock summaries for up to MAX_TICKERS tickers.
     Each entry in the returned list is the dict produced by get_stock_summary,
     tagged with its ticker even in the error case so the caller can report
     which specific ticker failed.
+
+    Problema 38 (Iteration 4, Sezione 4): optional expected_names maps each
+    ticker (uppercase) to the company name paired with it during extraction
+    (see rag_pipeline.extract_ticker_candidates), forwarded to
+    get_stock_summary()'s expected_name so a wrong-and-nonexistent guess can
+    self-correct via the same name-search fallback as the single-ticker
+    path — applied independently per company, so one wrong guess in a
+    3-company comparison does not affect the other two, and a company with
+    no entry in expected_names (or no dict at all) behaves exactly as
+    before this parameter existed. Defaults to None, so every existing
+    caller (get_multiple_stock_summaries(tickers), no second argument) is
+    unaffected.
     """
+    expected_names = expected_names or {}
     results = []
     for ticker in tickers[:MAX_TICKERS]:
-        summary = get_stock_summary(ticker)
+        summary = get_stock_summary(ticker, expected_name=expected_names.get(ticker.upper()))
         if "error" in summary:
             summary = {"ticker": ticker.upper(), **summary}
         results.append(summary)
