@@ -512,28 +512,41 @@ def test_get_stock_summary_still_errors_when_name_fallback_also_finds_nothing():
     assert "error" in result
 
 
-def test_get_stock_summary_does_not_consult_name_when_ticker_already_resolves():
+def test_get_stock_summary_does_not_auto_correct_a_ticker_that_already_resolves():
     """
-    Deliberate scope limit (see get_stock_summary's docstring): a ticker
-    that already resolves on the first attempt returns immediately, with
-    no name comparison and no extra yf.Search() call at all — even where
-    expected_name would not textually match the real company name (e.g.
-    "Google" vs the actual longName "Alphabet Inc."). This is what keeps
-    the fix's added cost at zero for every ticker that already works
-    today, and avoids the false-positive risk a universal name check would
-    introduce on exactly this kind of legitimate brand/legal-name
-    mismatch (see COMMON_TICKER_FIXES, Problema 12).
+    UPDATED by Problema 39 (1 settembre 2026) — this test originally
+    asserted that a ticker resolving on the first attempt skipped the name
+    check AND the extra yf.Search() call entirely (zero added cost, zero
+    revalidation, by deliberate design at the time). That trade-off was
+    revisited after a live, confirmed case ("PST" used for Poste Italiane
+    instead of "PST.MI", itself a real ETF, so the direct lookup "worked"
+    and hid a wrong company with no warning at all) — see
+    _ticker_name_mismatch_warning() in financial_data.py.
+
+    What is STILL true, and still asserted here: the ticker and data
+    returned are never silently changed just because expected_name doesn't
+    textually match the real company name (e.g. "Google" vs. the actual
+    longName "Alphabet Inc." — a legitimate brand/legal-name mismatch, see
+    COMMON_TICKER_FIXES, Problema 12). Only the "no extra Search() call at
+    all" half of the original guarantee changed — see
+    test_get_stock_summary_no_warning_when_direct_success_ticker_matches_name_search
+    for the dedicated regression test confirming this exact Google case
+    still raises no warning either (the name search resolves back to the
+    same "GOOGL" symbol).
     """
     google_style_info = _wbd_style_info(
         longName="Alphabet Inc.", trailingEps=6.5, trailingPE=25.0
     )
     with patch(
         "src.financial_data.yf.Ticker", return_value=_mock_ticker_with_info(google_style_info)
-    ), patch("src.financial_data.yf.Search") as mock_search:
+    ), patch(
+        "src.financial_data.yf.Search",
+        return_value=_mock_search_with_quotes([{"symbol": "GOOGL"}]),
+    ):
         result = get_stock_summary("GOOGL", expected_name="Google")
     assert "error" not in result
+    assert result["ticker"] == "GOOGL"
     assert result["name"] == "Alphabet Inc."
-    mock_search.assert_not_called()
 
 
 def test_get_multiple_stock_summaries_corrects_independently_per_ticker():
@@ -738,6 +751,117 @@ def test_get_stock_summary_falls_back_to_ticker_match_when_name_search_finds_not
 
     assert result["ticker"] == "PST.MI"
     assert "error" not in result
+
+
+# Problema 39 (1 settembre 2026, confirmed live) — a ticker that succeeds
+# on its own DIRECT lookup (no fallback involved at all) can still be the
+# wrong company: confirmed live case, a differently-phrased query made the
+# extractor guess bare "PST" for Poste Italiane, which is itself a real,
+# priced US ETF (ProShares UltraShort 7-10 Year Treasury) -- so the direct
+# lookup succeeded immediately and neither Problema 37/38 fallback above
+# ever ran. Fix (Option 3, chosen explicitly by the user over auto-
+# correcting or a name-string comparison): cross-check the ticker actually
+# used against resolve_ticker(expected_name) and attach a WARNING only,
+# never silently swap the ticker.
+
+def test_get_stock_summary_warns_when_direct_success_ticker_disagrees_with_name_search():
+    """
+    Reproduces the confirmed live failure: "PST" resolves directly (it is a
+    real ETF), so no fallback runs, but a search on the company name alone
+    ("Poste Italiane") points to a different symbol ("PST.MI"). The wrong
+    ticker's data must still be returned as before (never auto-corrected --
+    deliberately not implemented, see _ticker_name_mismatch_warning
+    docstring), but the result must now carry an explicit warning.
+    """
+    pst_etf_mock = _mock_ticker_with_info(_wbd_style_info(longName="ProShares UltraShort 7-10 Year Treasury"))
+
+    def _fake_search(candidate, max_results=5):
+        assert candidate == "Poste Italiane"
+        return _mock_search_with_quotes([{"symbol": "PST.MI"}])
+
+    with patch("src.financial_data.yf.Ticker", return_value=pst_etf_mock), patch(
+        "src.financial_data.yf.Search", side_effect=_fake_search
+    ):
+        result = get_stock_summary("PST", expected_name="Poste Italiane")
+
+    assert "error" not in result
+    assert result["ticker"] == "PST"  # unchanged -- warning only, no auto-correction
+    assert result["name"] == "ProShares UltraShort 7-10 Year Treasury"
+    assert "ticker_mismatch_warning" in result
+    assert "PST" in result["ticker_mismatch_warning"]
+    assert "PST.MI" in result["ticker_mismatch_warning"]
+
+
+def test_get_stock_summary_no_warning_when_direct_success_ticker_matches_name_search():
+    """
+    Regression guard for the exact false-positive risk this design was
+    chosen to avoid: a legitimate brand/legal-name mismatch (Google's
+    common name vs. "Alphabet Inc.", already relied upon via
+    COMMON_TICKER_FIXES) must NOT raise a warning, because comparing
+    tickers (not name strings) means the name-based search independently
+    resolves back to the same symbol.
+    """
+    googl_mock = _mock_ticker_with_info(_wbd_style_info(longName="Alphabet Inc."))
+
+    def _fake_search(candidate, max_results=5):
+        assert candidate == "Google"
+        return _mock_search_with_quotes([{"symbol": "GOOGL"}])
+
+    with patch("src.financial_data.yf.Ticker", return_value=googl_mock), patch(
+        "src.financial_data.yf.Search", side_effect=_fake_search
+    ):
+        result = get_stock_summary("GOOGL", expected_name="Google")
+
+    assert "error" not in result
+    assert "ticker_mismatch_warning" not in result
+
+
+def test_get_stock_summary_skips_mismatch_check_without_an_expected_name():
+    """
+    No name hint at all (expected_name=None, the pre-Problema-38 default
+    used by get_current_price()/get_closing_prices()) must skip the check
+    entirely -- no extra yf.Search() call, no warning key -- so callers
+    that never had a name hint pay zero added cost from this fix."""
+    aapl_mock = _mock_ticker_with_info(_wbd_style_info(longName="Apple Inc."))
+
+    with patch("src.financial_data.yf.Ticker", return_value=aapl_mock), patch(
+        "src.financial_data.yf.Search"
+    ) as mock_search:
+        result = get_stock_summary("AAPL")
+
+    assert "error" not in result
+    assert "ticker_mismatch_warning" not in result
+    mock_search.assert_not_called()
+
+
+def test_get_stock_summary_skips_mismatch_check_when_result_came_from_a_fallback():
+    """
+    The cross-check must fire ONLY on a direct, first-try success -- a
+    ticker that only succeeded via the Problema 37/38 fallback chain was
+    already resolved by (or despite) the name hint, so re-running the same
+    search again here would be redundant, not a genuine independent check.
+    Reuses the confirmed SQ -> XYZ (Block) scenario, which succeeds via the
+    name-based fallback, not directly.
+    """
+    empty_info_ticker = _mock_ticker_with_info({})
+    xyz_mock = _mock_ticker_with_info(_wbd_style_info(longName="Block, Inc."))
+
+    def _fake_ticker(symbol):
+        return xyz_mock if symbol == "XYZ" else empty_info_ticker
+
+    def _fake_search(candidate, max_results=5):
+        if candidate == "Block, Inc.":
+            return _mock_search_with_quotes([{"symbol": "XYZ"}])
+        return _mock_search_with_quotes([])
+
+    with patch("src.financial_data.yf.Ticker", side_effect=_fake_ticker), patch(
+        "src.financial_data.yf.Search", side_effect=_fake_search
+    ):
+        result = get_stock_summary("SQ", expected_name="Block, Inc.")
+
+    assert "error" not in result
+    assert result["ticker"] == "XYZ"
+    assert "ticker_mismatch_warning" not in result
 
 
 # Problema 34 — cronologia perde grafico/backtest/notizie dopo riavvio (o

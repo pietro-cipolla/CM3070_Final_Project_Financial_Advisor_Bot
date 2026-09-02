@@ -59,6 +59,64 @@ def _has_price_data(info: dict | None) -> bool:
     )
 
 
+def _ticker_name_mismatch_warning(resolved_ticker: str, expected_name: str) -> str | None:
+    """
+    Problema 39 (Iteration 4/5, confirmed live 1 settembre 2026): cross-check
+    a ticker that already resolved successfully on its own, DIRECT lookup
+    against the company name the LLM associated with it — WITHOUT changing
+    which ticker is actually used. Confirmed live case: a query phrased
+    differently than earlier tests made the extractor guess "PST" (bare,
+    no suffix) for Poste Italiane; "PST" is itself a real, priced US ETF
+    (ProShares UltraShort 7-10 Year Treasury), so the direct lookup
+    succeeded immediately and neither of the Problema 37/38 fallbacks in
+    get_stock_summary() below was ever reached — this is the Problema 30
+    "wrong-but-existing-on-first-try" residual, explicitly left unfixed
+    when Problema 38 was closed, now confirmed happening in practice.
+
+    Compares TICKERS, not company-name strings: resolve_ticker(expected_name)
+    reuses yfinance's own fuzzy company search (the same search that
+    already lets "Google" resolve to "GOOGL" and "Facebook" to "META", see
+    COMMON_TICKER_FIXES in rag_pipeline.py) to see what ticker the NAME
+    alone would resolve to, and compares that against the ticker actually
+    in use. This is deliberately not a comparison of company NAME strings
+    (e.g. info["longName"] vs expected_name): "Google" vs "Alphabet Inc."
+    would look like a mismatch under any naive text comparison even though
+    it is exactly the correct, already-relied-upon result — Yahoo's own
+    search engine already understands that alias and independently
+    resolves "Google" back to "GOOGL" too, so comparing SYMBOLS avoids
+    that false positive without needing a per-brand exceptions list.
+
+    Deliberately only called when the ORIGINAL ticker already succeeded on
+    its own, before any fallback ran (see get_stock_summary) — this means
+    an extra yfinance.Search() call is spent on every single successful
+    lookup that carries a name hint, not only on failures, a real ongoing
+    cost accepted specifically to close this residual rather than leaving
+    a wrong company shown with full confidence and no warning at all.
+
+    Known false-positive risk, accepted deliberately: two share classes of
+    the same real company (e.g. Alphabet's GOOG vs GOOGL) can legitimately
+    resolve to different ticker strings from a name search than from a
+    ticker guess, which would still raise this warning even though the
+    company itself is correct. Acceptable because this function never
+    blocks or overrides the result — it only attaches a caption the person
+    reading the answer can judge for themselves, the same "flag, don't
+    silently guess" principle already used for the negative-EPS P/E
+    ratio (Problema 28) and the low-confidence MPT estimate (Problema 25).
+
+    Returns a short warning string when the two disagree, or None when
+    they match (or when the name-based search itself failed and returned
+    the input unchanged, so there is nothing new to report).
+    """
+    name_based_symbol = resolve_ticker(expected_name)
+    if name_based_symbol and name_based_symbol != resolved_ticker:
+        return (
+            f'⚠️ "{resolved_ticker}" was used for "{expected_name}", but searching by that '
+            f'company name alone points to "{name_based_symbol}" instead — double check this '
+            f"is the company you meant."
+        )
+    return None
+
+
 def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     """
     Fetch key financial data for a single ticker symbol.
@@ -108,34 +166,28 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     ticker that resolves immediately (any market, including Google/
     Facebook below) never reaches either fallback and is unaffected.
 
-    Deliberately NOT extended to re-validate a ticker that already
-    resolves successfully on the very first attempt: an earlier version
-    of this fix considered comparing the returned company name against
-    expected_name on every successful lookup too (which would also close
-    the older, still-open Problema 30 residual — a wrong ticker that DOES
-    have data on its OWN first try, e.g. "ISP" resolving to ING Groep NV
-    instead of Intesa Sanpaolo, never revalidated by this fix). That was
-    deliberately not implemented: a generic name-similarity check cannot
-    distinguish "wrong company" from a legitimate brand/legal-name
-    mismatch that already exists in this same codebase (a user asking
-    about "Google" or "Facebook" gets back "Alphabet Inc."/"Meta
-    Platforms, Inc." from yfinance — see COMMON_TICKER_FIXES, Problema
-    12) — applying it universally would trade a rare, unconfirmed failure
-    mode for a new, guaranteed one on two of the most common queries this
-    app receives. So the Problema 30 "wrong-but-existing-on-first-try"
-    case remains an explicitly documented residual limitation (see
-    Diario Tecnico, Problema 38); what changed here is narrower — it is
-    the SECOND-stage resolution (already past a failed direct lookup)
-    that now prefers the name over a demonstrably-unreliable ticker
-    string, not a new check on first-try successes.
+    Problema 39 (Iteration 4/5, confirmed live 1 settembre 2026): a ticker
+    that already resolves successfully on the very first attempt is now
+    also cross-checked against expected_name, but only as a WARNING, never
+    a silent correction or a blocked result — see
+    _ticker_name_mismatch_warning() above for the full reasoning (why this
+    compares ticker symbols, not name strings, so Google/Facebook-style
+    legitimate brand mismatches stay silent while a case like "PST" being
+    used for Poste Italiane instead of "PST.MI" now surfaces a caption).
+    This closes the observability gap on the Problema 30 "wrong-but-
+    existing-on-first-try" residual (e.g. "ISP" resolving to ING Groep NV)
+    without attempting to auto-fix it, since a generic name-similarity
+    check cannot safely tell a genuinely wrong ticker apart from a
+    legitimate mismatch already relied upon elsewhere in this codebase.
     """
     try:
         resolved_ticker = ticker.upper()
         stock = yf.Ticker(resolved_ticker)
         info = stock.info
+        direct_lookup_succeeded = _has_price_data(info)
 
         # Validate that we received a real ticker
-        if not _has_price_data(info):
+        if not direct_lookup_succeeded:
             if expected_name:
                 name_fallback_symbol = resolve_ticker(expected_name)
                 if name_fallback_symbol and name_fallback_symbol != resolved_ticker:
@@ -186,7 +238,17 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
         if eps is not None and eps < 0 and pe_ratio is not None:
             pe_ratio = "N/A (negative earnings)"
 
-        return {
+        # Problema 39: only cross-checked when the ORIGINAL ticker already
+        # succeeded with no fallback involved — a ticker that only
+        # succeeded via resolve_ticker(expected_name) or resolve_ticker
+        # (ticker) above was already resolved BY the company name (or is
+        # the best the ticker string itself could produce), so re-running
+        # the same search here would be redundant, not a genuine check.
+        mismatch_warning = None
+        if direct_lookup_succeeded and expected_name:
+            mismatch_warning = _ticker_name_mismatch_warning(resolved_ticker, expected_name)
+
+        result = {
             "ticker": resolved_ticker,
             "name": info.get("longName") or info.get("shortName", resolved_ticker),
             "price": price,
@@ -204,6 +266,14 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
             "news_headlines": headlines,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        # Problema 29 backward-compatibility rule: new key added only when
+        # it has a real, non-None value, never "ticker_mismatch_warning":
+        # None explicitly — so this never alters the shape of a result
+        # dict for any pre-existing test asserting equality on the full
+        # dict.
+        if mismatch_warning:
+            result["ticker_mismatch_warning"] = mismatch_warning
+        return result
 
     except Exception as e:
         return {"error": str(e)}

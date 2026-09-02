@@ -297,6 +297,14 @@ def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
     the two call sites, unlike the original inline-only version.
     """
     with st.expander(f"📊 Data retrieved for {ticker}", expanded=True):
+        # Problema 39: a ticker that resolved successfully but doesn't
+        # match the company name it was extracted for (e.g. "PST" used
+        # for Poste Italiane instead of "PST.MI") — shown as a warning,
+        # never auto-corrected. See _ticker_name_mismatch_warning() in
+        # financial_data.py for why this only fires as a caption.
+        if stock_data.get("ticker_mismatch_warning"):
+            st.warning(stock_data["ticker_mismatch_warning"])
+
         # Problema 29: dividend yield, beta and sector are also in the RAG
         # context the model answers from (build_data_context) — shown here
         # too so every field the model can cite has a visible check.
@@ -333,10 +341,35 @@ def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
 def _render_multi_ticker_data_panel(tickers: list[str], valid: list[dict], failed: list[dict]) -> None:
     """Render the "Data retrieved" expander for the multi-ticker
     comparative path. Extracted for the same reason as
-    _render_single_ticker_data_panel above (Problema 34)."""
-    with st.expander(f"📊 Data retrieved for {', '.join(tickers)}", expanded=True):
+    _render_single_ticker_data_panel above (Problema 34).
+
+    Problema 40 (Iteration 4/5): the expander TITLE used to be built from
+    `tickers`, the caller's original, unresolved ticker guesses -- while
+    the BODY below has always used each stock_data's own resolved ticker
+    (get_multiple_stock_summaries() already stamps a resolved "ticker" key
+    on every success, and the original guess on every failure). Whenever
+    the Problema 37/38 fallback actually swapped a guess for a different
+    real symbol (confirmed live: "TLIT.MI" guessed, resolved to "PST.MI"
+    for Poste Italiane), the title and the body disagreed -- e.g. a title
+    reading "PIRC.MI, TLIT.MI" above a body showing "PIRC.MI" and
+    "PST.MI". The single-ticker path already got this exact fix under
+    Problema 37/38 ("use stock_data['ticker'], not the original guess");
+    the multi-ticker path was mistakenly believed at the time to need no
+    equivalent change, since the BODY was already correct -- only the
+    title was not. The `tickers` parameter is kept (both call sites --
+    the live turn and the history-restore dispatcher -- already pass it)
+    but is no longer used for the title, which is now built the same way
+    the persisted "multi_ticker" attachments dict already did
+    (`[d["ticker"] for d in valid]`) -- extended here to also include each
+    failed lookup's own (unresolved, since it never succeeded) ticker, so
+    a failed guess still appears in the title exactly as before.
+    """
+    resolved_title_tickers = [d["ticker"] for d in valid] + [d["ticker"] for d in failed]
+    with st.expander(f"📊 Data retrieved for {', '.join(resolved_title_tickers)}", expanded=True):
         for stock_data in valid:
             st.write(f"**{stock_data['ticker']} — {stock_data.get('name', '')}**")
+            if stock_data.get("ticker_mismatch_warning"):
+                st.warning(stock_data["ticker_mismatch_warning"])
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"Price: ${stock_data.get('price', 'N/A')}")
