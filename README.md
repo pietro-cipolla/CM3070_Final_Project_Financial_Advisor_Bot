@@ -14,7 +14,7 @@ The interface is a browser-based chat application built with Streamlit.
 
 ## Project Status
 
-This repository tracks the incremental development of the system across Phase 2 of the project (July–September 2026).
+This repository tracks the development of the system across Phase 2 of the project (July–September 2026).
 
 | Iteration | Description | Status |
 |---|---|---|
