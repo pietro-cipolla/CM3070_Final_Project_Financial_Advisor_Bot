@@ -404,6 +404,70 @@ def _render_portfolio_summary_panel(summary: dict) -> None:
             )
 
 
+def _last_multi_ticker_fallback(history: list[dict]) -> list[str] | None:
+    """
+    Problema 40 (Iteration 4 Sezione 4, continued -- live user testing, 4
+    settembre 2026): a deterministic fallback for a follow-up whose
+    singular pronoun/possessive is ambiguous between the multiple
+    companies just compared (e.g. "And its recent news?" right after
+    "Compare Eni and Enel"). The ticker-extraction LLM was explicitly
+    asked to resolve this itself (see history_note's case 3 in
+    _extract_all_tickers_with_names()), and the mocked tests for that
+    case pass -- but the user's own live re-testing found it unreliable
+    against the real model: it returned zero tickers, not the two
+    companies just discussed, on two independent real scenarios
+    ("Confrontami Eni e Enel" -> "E le sue notizie recenti?" and "Compare
+    Netflix and Disney" -> "how is it doing this year?"). Rather than
+    keep tuning the prompt and hoping a future wording generalizes better
+    against a model this code cannot call from a test, this reaches for
+    data the app already has with certainty: the exact resolved ticker
+    list saved on the immediately preceding turn's "multi_ticker"
+    attachment (Problema 34), instead of asking the LLM to re-derive that
+    same set from prose.
+
+    Called ONLY when normal ticker extraction has already found nothing
+    (see the caller) -- it never overrides a successful extraction, so
+    the two shapes of follow-up already confirmed working live (a
+    pronoun resolving to a single prior company, case 1; a relational
+    phrase resolving to a new one, case 2) are completely unaffected by
+    this function existing.
+
+    Looks only at the MOST RECENT prior turn, not the whole history
+    window, so it cannot latch onto a stale comparison several turns
+    back after the conversation has since moved on to something else.
+    Deliberately does not attempt anything equivalent for a preceding
+    "single_ticker" turn: that shape of follow-up (case 1) is already
+    confirmed working via the LLM, so there is no observed failure to
+    guard against there, and adding a guess would only add risk with no
+    corresponding benefit.
+
+    Returns the resolved ticker list from that turn's attachment if the
+    immediately preceding message is an assistant turn with a
+    "multi_ticker" attachment, else None.
+
+    Known residual limitation, declared rather than silently accepted:
+    if classify_query_intent() ever mis-labels a genuinely unrelated
+    follow-up as stock_query right after a multi-ticker turn, this
+    fallback would incorrectly reuse that turn's companies instead of
+    surfacing the "could not identify a ticker" message, rather than
+    correctly falling through to open_ended/unclear. Not observed in the
+    user's own testing of that exact scenario (see the Diario Tecnico);
+    judged an acceptable trade-off against the confirmed, repeated
+    failure this fallback fixes -- the same broaden-rather-than-silently-
+    guess-wrong principle already applied to Problema 39.
+    """
+    if not history:
+        return None
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return None
+    attachments = last.get("attachments")
+    if not attachments or attachments.get("kind") != "multi_ticker":
+        return None
+    tickers = attachments.get("tickers")
+    return list(tickers) if tickers else None
+
+
 def _render_message_attachments(attachments: dict) -> None:
     """
     Problema 34 (Iteration 4, Sezione 4): reconstruct the rich expanders
@@ -714,6 +778,16 @@ if user_query:
                         f"{', '.join(tickers)}."
                     )
 
+                # Problema 40 continued: extraction found nothing on its own --
+                # before giving up, check the deterministic fallback above.
+                used_ambiguous_followup_fallback = False
+                if not tickers:
+                    fallback_tickers = _last_multi_ticker_fallback(recent_history)
+                    if fallback_tickers:
+                        tickers = fallback_tickers
+                        name_hints = {}
+                        used_ambiguous_followup_fallback = True
+
                 if not tickers:
                     response = (
                         "I could not identify a stock ticker in your query. "
@@ -774,6 +848,12 @@ if user_query:
                         st.write(response)
 
                 else:  # multi-ticker comparative path (2 or 3 tickers)
+                    if used_ambiguous_followup_fallback:
+                        st.caption(
+                            "I couldn't tell which company your question meant on its "
+                            f"own, so I'm answering for {', '.join(tickers)} — the "
+                            "companies from your last comparison."
+                        )
                     stock_data_list = get_multiple_stock_summaries(tickers, expected_names=name_hints)
                     valid = [
                         _reconcile_price_with_cache(d, d["ticker"])

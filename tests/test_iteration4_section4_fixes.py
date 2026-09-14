@@ -1124,3 +1124,111 @@ def test_classify_intent_treats_ambiguous_multi_company_followup_as_stock_query(
     assert "discussed MULTIPLE companies together" in sent_system_prompt
     sent_messages = mock_create.call_args.kwargs["messages"]
     assert {"role": "user", "content": "Confrontami Eni e Enel"} in sent_messages
+
+
+# Problema 40 continued — deterministic fallback (app.py), 4 settembre 2026:
+# the user's own live re-testing found the case-3 history_note instruction
+# above unreliable against the real model on two independent scenarios
+# ("Confrontami Eni e Enel" -> "E le sue notizie recenti?" and "Compare
+# Netflix and Disney" -> "how is it doing this year?") -- both returned
+# zero tickers instead of the two companies just discussed. Rather than
+# keep tuning the prompt, app.py's _last_multi_ticker_fallback() reaches
+# for the exact resolved ticker list already saved on the immediately
+# preceding turn's "multi_ticker" attachment (Problema 34) when normal
+# extraction finds nothing, instead of asking the LLM to re-derive it.
+# These tests exercise that function directly -- pure Python logic, no
+# LLM call and nothing to mock.
+
+def test_last_multi_ticker_fallback_returns_tickers_from_immediately_preceding_turn():
+    from app import _last_multi_ticker_fallback
+
+    history = [
+        {"role": "user", "content": "Confrontami Eni e Enel"},
+        {
+            "role": "assistant",
+            "content": "Eni ha un P/E più basso, Enel un dividendo più alto...",
+            "attachments": {
+                "kind": "multi_ticker",
+                "tickers": ["E", "ENEL.MI"],
+                "valid": [{"ticker": "E"}, {"ticker": "ENEL.MI"}],
+                "failed": [],
+                "news_items_by_ticker": {},
+            },
+        },
+    ]
+    assert _last_multi_ticker_fallback(history) == ["E", "ENEL.MI"]
+
+
+def test_last_multi_ticker_fallback_none_when_preceding_turn_is_single_ticker():
+    """Case 1 (a pronoun resolving to ONE prior company) is already
+    confirmed working via the LLM -- this fallback must not touch that
+    shape of follow-up at all, so a single_ticker attachment must yield
+    no fallback."""
+    from app import _last_multi_ticker_fallback
+
+    history = [
+        {"role": "user", "content": "what about boeing?"},
+        {
+            "role": "assistant",
+            "content": "Boeing (BA) is a leading aerospace manufacturer...",
+            "attachments": {
+                "kind": "single_ticker",
+                "ticker": "BA",
+                "stock_data": {"ticker": "BA", "name": "Boeing Co"},
+                "backtest": {},
+                "news_items": [],
+            },
+        },
+    ]
+    assert _last_multi_ticker_fallback(history) is None
+
+
+def test_last_multi_ticker_fallback_none_for_empty_or_missing_history():
+    from app import _last_multi_ticker_fallback
+
+    assert _last_multi_ticker_fallback([]) is None
+    assert _last_multi_ticker_fallback(None) is None
+
+
+def test_last_multi_ticker_fallback_none_when_last_message_has_no_attachments():
+    """A plain-text turn (e.g. open_ended/unclear/error response) has no
+    "attachments" key at all -- must not raise, must return None."""
+    from app import _last_multi_ticker_fallback
+
+    history = [
+        {"role": "user", "content": "what should I invest in?"},
+        {"role": "assistant", "content": "That's a broad question..."},
+    ]
+    assert _last_multi_ticker_fallback(history) is None
+
+
+def test_last_multi_ticker_fallback_ignores_stale_multi_ticker_turn():
+    """The fallback only ever looks at the MOST RECENT prior turn -- an
+    older multi_ticker turn followed by an unrelated single_ticker turn
+    must not be reused, to avoid latching onto a stale comparison after
+    the conversation has moved on."""
+    from app import _last_multi_ticker_fallback
+
+    history = [
+        {"role": "user", "content": "Confrontami Eni e Enel"},
+        {
+            "role": "assistant",
+            "content": "Eni ha un P/E più basso...",
+            "attachments": {
+                "kind": "multi_ticker",
+                "tickers": ["E", "ENEL.MI"],
+                "valid": [], "failed": [], "news_items_by_ticker": {},
+            },
+        },
+        {"role": "user", "content": "what about boeing?"},
+        {
+            "role": "assistant",
+            "content": "Boeing (BA) is a leading aerospace manufacturer...",
+            "attachments": {
+                "kind": "single_ticker",
+                "ticker": "BA",
+                "stock_data": {"ticker": "BA"}, "backtest": {}, "news_items": [],
+            },
+        },
+    ]
+    assert _last_multi_ticker_fallback(history) is None
