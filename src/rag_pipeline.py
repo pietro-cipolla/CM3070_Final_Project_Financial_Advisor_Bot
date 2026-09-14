@@ -188,12 +188,16 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
                         "Classify the user's financial query into exactly one label: "
                         "stock_query, open_ended, portfolio_query, or unclear.\n"
                         "- stock_query: names or clearly implies one or more specific "
-                        "companies/tickers. This includes an unambiguous product or "
-                        "brand reference that points to one company, even if the "
-                        "company itself is never named (e.g. 'Should I buy an iPhone "
+                        "companies/tickers. This includes an unambiguous product, app, "
+                        "platform, or brand reference that points to one company, even "
+                        "if the company itself is never named — whether it's the "
+                        "company's own famous product (e.g. 'Should I buy an iPhone "
                         "maker?' implies Apple; 'Is the Windows maker a good buy?' "
-                        "implies Microsoft) — classify these as stock_query, not "
-                        "open_ended. It also includes a follow-up that only makes sense "
+                        "implies Microsoft) or a distinct-sounding brand/app/platform "
+                        "owned by a larger company (e.g. 'what about instagram?' implies "
+                        "Meta Platforms; 'is the YouTube company a good investment?' "
+                        "implies Alphabet Inc.) — classify all of these as stock_query, "
+                        "not open_ended. It also includes a follow-up that only makes sense "
                         "in light of the conversation shown before the final message "
                         "below (e.g. 'How does it compare to its main rival?' right "
                         "after discussing a specific company) — classify these as "
@@ -368,8 +372,16 @@ def _extract_all_tickers_with_names(
                         "You are a financial ticker extractor. "
                         "Given a user query, identify stock ticker symbols ONLY for "
                         "companies explicitly named or unambiguously referenced in the "
-                        "query itself (e.g. a product name like 'iPhone' clearly "
-                        "implies Apple), OR referenced through the conversation history "
+                        "query itself. This includes a product, app, platform, or brand "
+                        "name that clearly points to one company, even when the company "
+                        "itself is never named and even when the product's own name "
+                        "sounds nothing like the company — not just the company's own "
+                        "famous product (e.g. 'iPhone' implies Apple), but also a "
+                        "distinct-sounding brand/app/platform owned by a larger company "
+                        "(e.g. 'instagram' implies Meta Platforms; 'youtube' implies "
+                        "Alphabet Inc.; 'whatsapp' implies Meta Platforms) — extract the "
+                        "ticker of the owning public company in every one of these "
+                        "cases. OR referenced through the conversation history "
                         "under one of the three cases below when history is shown. Do "
                         "NOT add a competitor, related company, or any other company "
                         "that the query does not reference in one of these ways merely "
@@ -433,7 +445,37 @@ def _extract_all_tickers_with_names(
                 # stray artifacts like ".NONE" (Problema 11), which starts
                 # with a non-alphanumeric character either way, so widening
                 # it to isalnum() does not reopen that case.
-                return bool(ticker_part) and ticker_part[:1].isalnum() and "NONE" not in ticker_part
+                #
+                # Iteration 4 Sezione 4 continued (Problema 42, live user
+                # testing, 4 settembre 2026): a real ticker is never more
+                # than a handful of characters and never contains a space —
+                # confirmed live on "chi e il suo maggiore concorrente nel
+                # lusso automobilistico?" (Ferrari -> Lamborghini, correctly
+                # resolved by the case-2 relational-reference fix, but
+                # Lamborghini has no independent public ticker of its own —
+                # it is a Volkswagen/Audi subsidiary). With nothing valid to
+                # put in the TICKER slot, the model replied without the
+                # required ":" separator, and the legacy bare-token parsing
+                # path below (which only splits on commas) swallowed the
+                # ENTIRE malformed reply, spaces and all, as one "ticker" —
+                # producing the confirmed failure "Could not retrieve data
+                # for LAMBORGHINI LAMBORGHINI S.P.A.: No data found for
+                # ticker 'LAMBORGHINI LAMBORGHINI S.P.A.'" instead of the
+                # normal, honest "I could not identify a stock ticker"
+                # message. The colon-anchored path (_PAIR_START_RE) already
+                # cannot produce this — its own pattern is bounded to 1-10
+                # characters from [A-Z0-9.\-] only, which excludes spaces —
+                # so this check only ever changes behavior on the legacy
+                # bare-token path, exactly where the bug lives. A well-formed
+                # real ticker (US or non-US with an exchange suffix, e.g.
+                # "PST.MI", "7203.T", "BRK.B") is unaffected by either bound.
+                return (
+                    bool(ticker_part)
+                    and ticker_part[:1].isalnum()
+                    and "NONE" not in ticker_part
+                    and " " not in ticker_part
+                    and len(ticker_part) <= 10
+                )
 
             # Entries are anchored on the next short, ALL-CAPS "TICKER:"
             # token that immediately follows a comma (or the start of the

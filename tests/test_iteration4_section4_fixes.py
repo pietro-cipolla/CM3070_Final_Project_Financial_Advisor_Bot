@@ -1232,3 +1232,104 @@ def test_last_multi_ticker_fallback_ignores_stale_multi_ticker_turn():
         },
     ]
     assert _last_multi_ticker_fallback(history) is None
+
+
+# Problema 42 — product/app/platform recognition beyond the single "iPhone"
+# worked example (live user testing, 4 settembre 2026): "what about
+# instagram?" (no history involved at all) returned "I could not identify a
+# stock ticker in your query" even though the intent classifier correctly
+# recognized it as a stock_query -- the ticker-extraction prompt's only
+# worked example of product-implies-company was "iPhone" -> Apple, which
+# did not reliably generalize to a distinct-sounding owned brand like
+# Instagram (Meta Platforms). Both prompts now carry a small set of varied
+# examples spanning both shapes (a company's own famous product, and a
+# differently-named brand/app/platform it owns) instead of one.
+
+def test_extract_tickers_prompt_covers_owned_brand_beyond_own_product_name():
+    """The system prompt sent to the ticker-extraction call must mention
+    both shapes of product/brand reference, not just the company's own
+    product -- otherwise the fix is just one more hardcoded phrase
+    instead of the general pattern behind it."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("META:Meta Platforms Inc"),
+    ) as mock_create:
+        result = _extract_all_tickers_with_names("what about instagram?")
+    assert result == [{"ticker": "META", "name": "Meta Platforms Inc"}]
+    sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "instagram" in sent_system_prompt.lower()
+    assert "iphone" in sent_system_prompt.lower()  # original example kept
+
+
+def test_classify_intent_prompt_covers_owned_brand_beyond_own_product_name():
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("stock_query"),
+    ) as mock_create:
+        result = classify_query_intent("what about instagram?")
+    assert result == "stock_query"
+    sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "instagram" in sent_system_prompt.lower()
+
+
+# Problema 43 — malformed/oversized "ticker" tokens rejected before a
+# lookup is even attempted (live user testing, 4 settembre 2026): "chi e
+# il suo maggiore concorrente nel lusso automobilistico?" right after
+# Ferrari correctly resolved to Lamborghini (the case-2 relational-
+# reference fix worked), but Lamborghini has no independent public ticker
+# (Volkswagen/Audi subsidiary) -- the model's malformed reply (no ":"
+# separator) was swallowed whole, spaces included, by the legacy
+# bare-token parsing path as a single "ticker", producing the confirmed
+# live failure "Could not retrieve data for LAMBORGHINI LAMBORGHINI
+# S.P.A.: No data found for ticker 'LAMBORGHINI LAMBORGHINI S.P.A.'"
+# instead of the normal, honest "I could not identify a stock ticker"
+# message.
+
+def test_extract_tickers_rejects_malformed_multiword_bare_token():
+    """The literal confirmed failure: a malformed reply with no ':' and
+    internal whitespace must be rejected, not treated as a single
+    (garbage) ticker -- falls through to no tickers found."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("LAMBORGHINI LAMBORGHINI S.P.A."),
+    ):
+        result = _extract_all_tickers_with_names(
+            "chi è il suo maggiore concorrente nel lusso automobilistico?"
+        )
+    assert result == []
+
+
+def test_extract_tickers_rejects_oversized_bare_token():
+    """A malformed reply with no spaces but well beyond any real ticker's
+    length must also be rejected -- length alone, not just whitespace, is
+    a valid signal that a token is not a real ticker."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("NOTAREALTICKERATALL"),
+    ):
+        result = _extract_all_tickers_with_names("some company with no ticker")
+    assert result == []
+
+
+def test_extract_tickers_still_accepts_well_formed_suffixed_tickers():
+    """Non-regression: real, well-formed tickers (including a non-US
+    exchange suffix) must be unaffected by the new whitespace/length
+    guard -- both bounds are well within what any real ticker needs."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("PST.MI,7203.T,BRK.B"),
+    ):
+        result = _extract_all_tickers_with_names("Poste Italiane, Toyota, Berkshire")
+    assert result == [
+        {"ticker": "PST.MI", "name": None},
+        {"ticker": "7203.T", "name": None},
+        {"ticker": "BRK.B", "name": None},
+    ]
