@@ -158,6 +158,22 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     classified correctly by looking at what was just discussed, instead of
     being judged in isolation. Defaults to None so every pre-Problema-27
     caller/test is unaffected.
+
+    Iteration 4 Sezione 4 addition (Problema 40, live user testing, 4
+    settembre 2026): Problema 27's fix forwarded history but the prompt's
+    single worked example ("its main rival?" right after ONE company) left
+    the model with no guidance for a follow-up whose antecedent is
+    genuinely ambiguous — e.g. "And its recent news?" right after "Compare
+    Eni and Enel", where nothing in either message says which of the two
+    is meant. In manual testing this was classified "unclear" instead of
+    "stock_query", even though the query is not actually off-topic — it is
+    a legitimate question the pipeline just cannot narrow to one company.
+    The prompt below now says explicitly: classify this shape of follow-up
+    as stock_query too, and let ticker extraction resolve the ambiguity by
+    returning every company from the ambiguous prior turn, rather than
+    have the intent classifier reject it as unclear first. See
+    _extract_all_tickers_with_names()'s history_note for the matching
+    extraction-side change (case 3).
     """
     try:
         history_messages = _history_messages(history)
@@ -181,7 +197,14 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
                         "in light of the conversation shown before the final message "
                         "below (e.g. 'How does it compare to its main rival?' right "
                         "after discussing a specific company) — classify these as "
-                        "stock_query too, not unclear.\n"
+                        "stock_query too, not unclear. This still applies even when the "
+                        "final message's reference is ambiguous — e.g. 'And its recent "
+                        "news?' right after a message that discussed MULTIPLE companies "
+                        "together (a comparison), where nothing says which single one is "
+                        "meant. Do not classify this as unclear just because it is "
+                        "unclear WHICH company is meant — a downstream step will resolve "
+                        "that by considering every company from the ambiguous prior "
+                        "turn, so still classify it as stock_query.\n"
                         "- open_ended: asks for general investing advice with no "
                         "specific company named OR implied, even after considering any "
                         "conversation shown below.\n"
@@ -262,17 +285,76 @@ def _extract_all_tickers_with_names(
     caller/test that only ever needed ticker strings is unaffected; only
     this function and its new caller, extract_ticker_candidates(), carry
     the name through.
+
+    Iteration 4 Sezione 4 addition (Problemi 40/41, live user testing, 4
+    settembre 2026): the history_note below replaces the original
+    Problema-27 version, which only ever taught the model to resolve a
+    pronoun back to a company ALREADY named ("it" -> the company just
+    discussed). Two real follow-up shapes fell outside that one case and
+    both reproduced live:
+
+    - Problema 41 ("its main rival in GPUs?" right after "what about
+      nvidia?", also "e del suo principale competitor?"): the query names
+      a DIFFERENT company, defined only by its relationship to the one
+      just discussed, and never mentions it directly. The old history_note
+      only covered resolving back to an ALREADY-named company, so this
+      fell through to the standalone "Do NOT add competitors, related
+      companies..." instruction below (written for a different bug,
+      Problema 9 — see that instruction's own comment) and the model
+      correctly followed it: it did not invent a company. Net effect: a
+      query the user explicitly asked (name the rival) was refused as if
+      it were unrequested padding. Fix (case 2 below): a relational
+      description ("its rival", "its main competitor", "its supplier",
+      "the company that acquired it") that identifies exactly ONE company
+      via a company already discussed is a real request for that company,
+      not padding, and must be resolved and extracted even though it was
+      never named.
+
+    - Problema 40 ("And its recent news?" right after "Compare Eni and
+      Enel"): the antecedent is genuinely ambiguous — the prior turn named
+      TWO companies, and nothing in the final message narrows to one of
+      them (unlike Problema 41's case, no relationship phrase picks out a
+      single answer). Guessing one (e.g. by recency) risks a confident,
+      silently WRONG single-company answer — worse than admitting
+      ambiguity, and the same "warn/broaden rather than silently guess"
+      principle already applied to Problema 39. Fix (case 3 below):
+      extract EVERY company from the ambiguous prior turn, so the query is
+      answered for all of them via the existing multi-ticker comparison
+      path instead of picking one at random.
+
+    Both fixes are one generalization, not two special cases: resolve
+    whatever set of companies the final message's reference actually and
+    unambiguously points to — one already-named company (case 1, kept
+    from Problema 27), one new company when a relational phrase narrows to
+    exactly one (case 2), or the full prior set when a bare reference
+    leaves genuine ambiguity among several (case 3).
     """
     try:
         history_messages = _history_messages(history)
         history_note = (
-            "If prior conversation turns are shown before the final message, use "
-            "them ONLY to resolve pronouns or implicit references in the final "
-            "message (e.g. 'it', 'its main rival', 'the same company') to a "
-            "company actually named earlier — then extract that company's "
-            "ticker. Never pull in an extra company from the conversation history "
-            "that the final message does not itself refer to, implicitly or "
-            "explicitly. "
+            "If prior conversation turns are shown before the final message, they "
+            "may be needed to resolve what the final message is actually asking "
+            "about. Three cases, in order:\n"
+            "1. The final message uses a pronoun or phrase referring back to a "
+            "SINGLE company just discussed ('it', 'the company', 'the same one') "
+            "-> extract that same company.\n"
+            "2. The final message describes a DIFFERENT company defined only by "
+            "its relationship to one just discussed ('its main rival', 'its main "
+            "competitor', 'its biggest supplier', 'the company that acquired "
+            "it', 'the market leader in that space') -> identify and extract "
+            "that other, related company, even though the conversation never "
+            "named it directly. This is a real request for that company, not "
+            "unrequested padding — extract it.\n"
+            "3. The final message refers back with an ambiguous singular "
+            "reference to a prior message that discussed MULTIPLE companies "
+            "together, and nothing in the final message narrows it down to just "
+            "one of them -> extract ALL of those companies, rather than "
+            "guessing which single one was meant.\n"
+            "Never pull in a company that the final message does not refer to "
+            "under one of these three cases, or under the direct-mention/"
+            "implied-name rule above — these three cases are the ONLY way "
+            "conversation history may add a company beyond what the final "
+            "message itself names or implies. "
             if history_messages else ""
         )
         response = client.chat.completions.create(
@@ -287,13 +369,18 @@ def _extract_all_tickers_with_names(
                         "Given a user query, identify stock ticker symbols ONLY for "
                         "companies explicitly named or unambiguously referenced in the "
                         "query itself (e.g. a product name like 'iPhone' clearly "
-                        "implies Apple). Do NOT add competitors, related companies, or "
-                        "any other company for context or comparison purposes — extract "
-                        "every company the user actually mentioned, with NO upper limit "
-                        "on how many you return (a separate step outside your control "
-                        "handles any limit on how many are compared at once, and needs "
-                        "to know the true full count, so do not cap or truncate your "
-                        "answer yourself). "
+                        "implies Apple), OR referenced through the conversation history "
+                        "under one of the three cases below when history is shown. Do "
+                        "NOT add a competitor, related company, or any other company "
+                        "that the query does not reference in one of these ways merely "
+                        "for extra context or comparison — for example, if the user "
+                        "simply asks to compare two named companies, do not add a third "
+                        "one of your own choosing. Extract every company the query "
+                        "actually asks about, with NO upper limit on how many you "
+                        "return (a separate step outside your control handles any "
+                        "limit on how many are compared at once, and needs to know the "
+                        "true full count, so do not cap or truncate your answer "
+                        "yourself). "
                         f"{history_note}"
                         "If you find no companies at all, return NONE — never pad the "
                         "list with a placeholder. "

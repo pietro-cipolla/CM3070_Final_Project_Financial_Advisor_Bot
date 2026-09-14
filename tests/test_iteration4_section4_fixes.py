@@ -967,3 +967,160 @@ def test_init_db_migrates_attachments_column_into_pre_existing_db(tmp_path):
     assert load_conversation("session-a", path) == [
         {"role": "user", "content": "hello after migration"}
     ]
+
+
+# Problemi 40/41 — history_note generalization (live user testing, 4
+# settembre 2026): Problema 27's fix forwarded history but only ever
+# taught the model to resolve a pronoun back to a company already named.
+# Two real follow-up shapes fell outside that one case (see the
+# _extract_all_tickers_with_names() docstring for the full write-up):
+#   - Problema 41: "its main rival in GPUs?" / "e del suo principale
+#     competitor?" — a DIFFERENT, never-named company identified only by
+#     its relationship to one just discussed (case 2 of the new
+#     history_note).
+#   - Problema 40: "And its recent news?" right after "Compare Eni and
+#     Enel" — an ambiguous reference to ONE of several companies just
+#     discussed together, with nothing narrowing it to a single one
+#     (case 3 of the new history_note).
+# As with test_extract_tickers_forwards_history_to_the_api_call() above,
+# these tests assert the plumbing — that the right history reaches the
+# API call, that the new case-2/case-3 instructions are actually present
+# in the prompt sent, and that a (mocked) correctly-resolving reply is
+# parsed into the expected ticker(s) — not that the real gpt-4o-mini
+# reliably follows the new instructions. That reasoning happens inside
+# the real LLM, not in this code, and can only be confirmed by testing
+# against the real deployed app (see the Diario Tecnico for that
+# follow-up), the same limitation already noted for Problema 27's own
+# tests.
+
+
+def test_extract_tickers_resolves_relational_reference_to_new_company():
+    """Problema 41, case 2: a relational phrase ("its main rival in
+    GPUs") naming no company directly must still be extracted, given a
+    single-company antecedent in history — this is the literal scenario
+    from the user's screenshots, previously failing with "I could not
+    identify a stock ticker in your query"."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    history = [
+        {"role": "user", "content": "what about nvidia?"},
+        {"role": "assistant", "content": "Nvidia (NVDA) is a leading GPU maker..."},
+    ]
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("AMD:Advanced Micro Devices"),
+    ) as mock_create:
+        result = _extract_all_tickers_with_names(
+            "its main rival in GPUs?", history=history
+        )
+    assert result == [{"ticker": "AMD", "name": "Advanced Micro Devices"}]
+    sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "its main rival" in sent_system_prompt
+    assert "not unrequested padding" in sent_system_prompt
+
+
+def test_extract_tickers_resolves_relational_reference_generalizes_beyond_rivals():
+    """The case-2 instruction must not be worded only for "rival"/
+    "competitor" — the same relational-reference mechanism has to cover
+    other relationships too (e.g. a supplier), or the fix only patches
+    the one literal phrase from the bug report instead of the general
+    pattern behind it."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    history = [
+        {"role": "user", "content": "what about nvidia?"},
+        {"role": "assistant", "content": "Nvidia (NVDA) is a leading GPU maker..."},
+    ]
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("TSM:Taiwan Semiconductor Manufacturing"),
+    ):
+        result = _extract_all_tickers_with_names(
+            "who is its main chip supplier?", history=history
+        )
+    assert result == [
+        {"ticker": "TSM", "name": "Taiwan Semiconductor Manufacturing"}
+    ]
+
+
+def test_extract_tickers_resolves_ambiguous_reference_to_full_prior_set():
+    """Problema 40, case 3: an ambiguous singular reference ("its recent
+    news") after a turn that compared TWO companies together, with
+    nothing in the final message narrowing it to one of them, must
+    extract BOTH companies from that prior turn rather than guessing a
+    single one."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    history = [
+        {"role": "user", "content": "Confrontami Eni e Enel"},
+        {
+            "role": "assistant",
+            "content": "Eni (E) e Enel (ENEL.MI) sono due delle principali aziende energetiche italiane...",
+        },
+    ]
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion(
+            "E:Eni SpA,ENEL.MI:Enel SpA"
+        ),
+    ) as mock_create:
+        result = _extract_all_tickers_with_names(
+            "E le sue notizie recenti?", history=history
+        )
+    assert result == [
+        {"ticker": "E", "name": "Eni SpA"},
+        {"ticker": "ENEL.MI", "name": "Enel SpA"},
+    ]
+    sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "extract ALL of those companies" in sent_system_prompt
+
+
+def test_extract_tickers_still_refuses_unrequested_padding_with_history_present():
+    """Non-regression (Problema 9, unaffected by Problemi 40/41): even
+    with history present and the new case-2/case-3 instructions active,
+    a plain two-company comparison that does not reference any third
+    company in any of the three history_note cases must still not have a
+    third company added — the base "no padding" rule must still apply
+    when none of the three cases apply."""
+    from src.rag_pipeline import _extract_all_tickers_with_names
+
+    history = [
+        {"role": "user", "content": "what about nvidia?"},
+        {"role": "assistant", "content": "Nvidia (NVDA) is a leading GPU maker..."},
+    ]
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("TSLA:Tesla Inc,F:Ford Motor Company"),
+    ):
+        result = _extract_all_tickers_with_names(
+            "Compare Tesla and Ford", history=history
+        )
+    assert result == [
+        {"ticker": "TSLA", "name": "Tesla Inc"},
+        {"ticker": "F", "name": "Ford Motor Company"},
+    ]
+
+
+def test_classify_intent_treats_ambiguous_multi_company_followup_as_stock_query():
+    """Problema 40: the intent classifier's prompt must explicitly cover
+    the ambiguous-multi-company follow-up shape, not just the
+    single-company one — this is the case that was actually observed
+    misclassified as "unclear" in manual testing ("E le sue notizie
+    recenti?" after comparing Eni and Enel)."""
+    history = [
+        {"role": "user", "content": "Confrontami Eni e Enel"},
+        {
+            "role": "assistant",
+            "content": "Eni (E) e Enel (ENEL.MI) sono due delle principali aziende energetiche italiane...",
+        },
+    ]
+    with patch(
+        "src.rag_pipeline.client.chat.completions.create",
+        return_value=_mock_completion("stock_query"),
+    ) as mock_create:
+        result = classify_query_intent("E le sue notizie recenti?", history=history)
+    assert result == "stock_query"
+    sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
+    assert "discussed MULTIPLE companies together" in sent_system_prompt
+    sent_messages = mock_create.call_args.kwargs["messages"]
+    assert {"role": "user", "content": "Confrontami Eni e Enel"} in sent_messages
