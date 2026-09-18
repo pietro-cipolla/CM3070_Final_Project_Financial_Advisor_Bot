@@ -23,8 +23,8 @@ This repository tracks the development of the system across Phase 2 of the proje
 | 2 - NewsAPI + Visualisation | Real-time news and interactive price charts | ✅ Done |
 | 3 - Memory + Portfolio tracker | SQLite persistence and portfolio P&L | ✅ Done |
 | 4 - Sentiment + Backtesting | VADER sentiment analysis and historical backtesting | ✅ Done |
-| 5 - User testing | 5-participant study, 20-query evaluation | ✅ Current |
-| 6 - Final polish | Documentation, refactoring, submission prep | ⬜ Planned |
+| 5 - User testing | 5-participant study, 20-query evaluation | ✅ Done |
+| 6 - Final polish | Documentation, refactoring, submission prep | ✅ Current |
 
 ---
 
