@@ -159,8 +159,7 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     being judged in isolation. Defaults to None so every pre-Problema-27
     caller/test is unaffected.
 
-    Pre-deadline generalization pass (Problema 44, discussione manuale,
-    settembre 2026): both this prompt and the extraction prompt below
+    Generalization pass: both this prompt and the extraction prompt below
     listed only 2-3 worked brand examples (Instagram, YouTube, WhatsApp)
     with no explicit statement that they were illustrative rather than an
     exhaustive list — a real risk that the model reads a short worked-
