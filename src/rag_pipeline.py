@@ -159,6 +159,22 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     being judged in isolation. Defaults to None so every pre-Problema-27
     caller/test is unaffected.
 
+    Pre-deadline generalization pass (Problema 44, discussione manuale,
+    settembre 2026): both this prompt and the extraction prompt below
+    listed only 2-3 worked brand examples (Instagram, YouTube, WhatsApp)
+    with no explicit statement that they were illustrative rather than an
+    exhaustive list — a real risk that the model reads a short worked-
+    example list as the boundary of what it should recognize, instead of
+    as one instance of a general pattern (any well-known brand/product/app
+    owned by a larger public company). Added one explicit sentence to both
+    prompts saying so, without adding new brand examples or a new
+    hardcoded list — the fix is a stated PRINCIPLE, not more enumeration,
+    which is the actual gap this closes. Deliberately the ONLY change made
+    in this pass: broader changes (generalizing the relational-reference
+    resolution in case 2/3 below, or extending the Problema 39 cross-check
+    pattern elsewhere) were considered and set aside as out of scope this
+    close to the submission deadline — see Future Work in the report.
+
     Iteration 4 Sezione 4 addition (Problema 40, live user testing, 4
     settembre 2026): Problema 27's fix forwarded history but the prompt's
     single worked example ("its main rival?" right after ONE company) left
@@ -197,7 +213,11 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
                         "owned by a larger company (e.g. 'what about instagram?' implies "
                         "Meta Platforms; 'is the YouTube company a good investment?' "
                         "implies Alphabet Inc.) — classify all of these as stock_query, "
-                        "not open_ended. It also includes a follow-up that only makes sense "
+                        "not open_ended. These are illustrative EXAMPLES of a pattern, not "
+                        "an exhaustive list: apply the same reasoning to any other "
+                        "well-known brand, product, app, or platform you recognize as "
+                        "belonging to a larger public company, even if it is not one of "
+                        "the ones named above. It also includes a follow-up that only makes sense "
                         "in light of the conversation shown before the final message "
                         "below (e.g. 'How does it compare to its main rival?' right "
                         "after discussing a specific company) — classify these as "
@@ -381,7 +401,12 @@ def _extract_all_tickers_with_names(
                         "(e.g. 'instagram' implies Meta Platforms; 'youtube' implies "
                         "Alphabet Inc.; 'whatsapp' implies Meta Platforms) — extract the "
                         "ticker of the owning public company in every one of these "
-                        "cases. OR referenced through the conversation history "
+                        "cases. These are illustrative EXAMPLES of a pattern, not an "
+                        "exhaustive list: the same reasoning applies to any other "
+                        "well-known brand, product, app, or platform you recognize as "
+                        "belonging to a larger public company, even one never listed "
+                        "here — do not limit yourself to only the brands named above. "
+                        "OR referenced through the conversation history "
                         "under one of the three cases below when history is shown. Do "
                         "NOT add a competitor, related company, or any other company "
                         "that the query does not reference in one of these ways merely "
