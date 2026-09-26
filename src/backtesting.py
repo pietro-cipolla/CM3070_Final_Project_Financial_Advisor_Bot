@@ -43,7 +43,7 @@ def simulate_crossover_strategy(
 
     cost_per_trade (default 0.0, i.e. cost-free, matching the original
     behaviour) deducts a flat fraction of position value from the
-    strategy's return on every day a trade — an entry or an exit —
+    strategy's return on every day a trade, an entry or an exit, 
     actually occurs (see module docstring for the partial transaction-cost
     model this implements and its limitations).
 
