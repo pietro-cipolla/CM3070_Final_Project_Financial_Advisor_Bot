@@ -14,7 +14,7 @@ MAX_TICKERS = 3
 
 def resolve_ticker(candidate: str) -> str:
     """
-    Iteration 4, Sezione 4 (Problema 37): resolve a company name or an
+    Problem 37 Iteration 4, Section 4: resolve a company name or an
     imperfect/partial ticker guess to a real Yahoo Finance symbol using
     yfinance's own search index, instead of depending on the LLM extractor
     (rag_pipeline.py) to recall every non-US exchange suffix from memory —
@@ -61,15 +61,15 @@ def _has_price_data(info: dict | None) -> bool:
 
 def _ticker_name_mismatch_warning(resolved_ticker: str, expected_name: str) -> str | None:
     """
-    Problema 39 (Iteration 4/5, confirmed live 1 settembre 2026): cross-check
+    Problem 39: cross-check
     a ticker that already resolved successfully on its own, DIRECT lookup
     against the company name the LLM associated with it — WITHOUT changing
     which ticker is actually used. Confirmed live case: a query phrased
     differently than earlier tests made the extractor guess "PST" (bare,
     no suffix) for Poste Italiane; "PST" is itself a real, priced US ETF
     (ProShares UltraShort 7-10 Year Treasury), so the direct lookup
-    succeeded immediately and neither of the Problema 37/38 fallbacks in
-    get_stock_summary() below was ever reached — this is the Problema 30
+    succeeded immediately and neither of the Problems 37/38 fallbacks in
+    get_stock_summary() below was ever reached — this is the Problem 30
     "wrong-but-existing-on-first-try" residual, explicitly left unfixed
     when Problema 38 was closed, now confirmed happening in practice.
 
@@ -101,7 +101,7 @@ def _ticker_name_mismatch_warning(resolved_ticker: str, expected_name: str) -> s
     blocks or overrides the result — it only attaches a caption the person
     reading the answer can judge for themselves, the same "flag, don't
     silently guess" principle already used for the negative-EPS P/E
-    ratio (Problema 28) and the low-confidence MPT estimate (Problema 25).
+    ratio (Problema 28) and the low-confidence MPT estimate (Problem 25).
 
     Returns a short warning string when the two disagree, or None when
     they match (or when the name-based search itself failed and returned
@@ -122,7 +122,7 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     Fetch key financial data for a single ticker symbol.
     Returns a flat dictionary of data points, or {'error': '...'} on failure.
 
-    Problema 37 (Iteration 4, Sezione 4): if the symbol as given does not
+    Problema 37 Iteration 4, Section 4: if the symbol as given does not
     resolve directly, this now retries once via resolve_ticker() before
     giving up — this is what lets an already-correct but less common
     symbol (e.g. "PST.MI"), or a name/guess the direct yf.Ticker lookup
@@ -131,7 +131,7 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     the only difference is what happens internally between the first failed
     lookup and the final error being returned.
 
-    Problema 38 (Iteration 4, Sezione 4): if an `expected_name` hint is also
+    Problema 38 Iteration 4, Section 4: if an `expected_name` hint is also
     given (the company name paired with this ticker during extraction —
     see rag_pipeline.extract_ticker_candidates), it is tried as a SECOND,
     independent resolution path, tried ONLY once the ticker as given has
@@ -166,7 +166,7 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
     ticker that resolves immediately (any market, including Google/
     Facebook below) never reaches either fallback and is unaffected.
 
-    Problema 39 (Iteration 4/5, confirmed live 1 settembre 2026): a ticker
+    Problema 39: a ticker
     that already resolves successfully on the very first attempt is now
     also cross-checked against expected_name, but only as a WARNING, never
     a silent correction or a blocked result — see
@@ -222,28 +222,10 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
 
         eps = info.get("trailingEps")
         pe_ratio = info.get("trailingPE") or info.get("forwardPE")
-        # Problema 28 (Iteration 4, Sezione 4): yfinance's trailingPE can be
-        # computed over a different trailing-earnings window than the
-        # trailingEps figure returned alongside it, so the two can go
-        # mutually inconsistent — most visibly once a company swings to a
-        # net loss, where a mathematically correct P/E (price / negative
-        # EPS) must itself be negative, but trailingPE was observed
-        # returning a large POSITIVE number instead (found on WBD: P/E
-        # 583.38 shown next to EPS -1.28). Rather than pass through a
-        # figure that is numerically present but not a coherent P/E for
-        # this EPS, treat it as untrustworthy whenever EPS is negative —
-        # same "don't silently present a bad number as good" principle
-        # already used for unpriced tickers (portfolio.py) and low-history
-        # MPT estimates (optimizer.py, Problema 25).
+        # Problem 28 Iteration 4, Section 4
         if eps is not None and eps < 0 and pe_ratio is not None:
             pe_ratio = "N/A (negative earnings)"
 
-        # Problema 39: only cross-checked when the ORIGINAL ticker already
-        # succeeded with no fallback involved — a ticker that only
-        # succeeded via resolve_ticker(expected_name) or resolve_ticker
-        # (ticker) above was already resolved BY the company name (or is
-        # the best the ticker string itself could produce), so re-running
-        # the same search here would be redundant, not a genuine check.
         mismatch_warning = None
         if direct_lookup_succeeded and expected_name:
             mismatch_warning = _ticker_name_mismatch_warning(resolved_ticker, expected_name)
@@ -266,11 +248,7 @@ def get_stock_summary(ticker: str, expected_name: str | None = None) -> dict:
             "news_headlines": headlines,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        # Problema 29 backward-compatibility rule: new key added only when
-        # it has a real, non-None value, never "ticker_mismatch_warning":
-        # None explicitly — so this never alters the shape of a result
-        # dict for any pre-existing test asserting equality on the full
-        # dict.
+        # Problem 29 backward-compatibility rule
         if mismatch_warning:
             result["ticker_mismatch_warning"] = mismatch_warning
         return result
@@ -309,7 +287,7 @@ def get_multiple_stock_summaries(
     tagged with its ticker even in the error case so the caller can report
     which specific ticker failed.
 
-    Problema 38 (Iteration 4, Sezione 4): optional expected_names maps each
+    Problem 38 Iteration 4, Section 4: optional expected_names maps each
     ticker (uppercase) to the company name paired with it during extraction
     (see rag_pipeline.extract_ticker_candidates), forwarded to
     get_stock_summary()'s expected_name so a wrong-and-nonexistent guess can
