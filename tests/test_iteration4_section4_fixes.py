@@ -1,19 +1,7 @@
 """
 tests/test_iteration4_section4_fixes.py
 Automated tests for the fix block that followed Iteration 4's Sezione 4
-end-to-end manual testing (20 agosto 2026, Problemi 26-34 — see the Diario
-Tecnico in the planning document for the full write-up of each).
-
-Kept as a separate file from test_iteration1.py/test_iteration2.py/etc.
-because these fixes span multiple modules and were all found by the same
-end-to-end testing pass, rather than belonging to one iteration's original
-feature set — mirrors how test_optimizer.py was kept separate from
-test_iteration4.py for the same kind of reason.
-
-One or two tests per problem are added here as each fix is implemented and
-packaged as its own dated commit (commit12 onward); this file grows
-incrementally across that block of commits, the same way test_iteration1.py
-grew across Iteration 1's own fix commits.
+end-to-end manual testing.
 """
 
 import sqlite3
@@ -48,7 +36,7 @@ def _mock_completion(content: str) -> MagicMock:
     return mock_response
 
 
-# Problema 27 — conversation history support (classify_query_intent,
+# Problem 27 — conversation history support (classify_query_intent,
 # extract_tickers_from_query/_extract_all_tickers, build_prompt)
 
 def test_history_messages_empty_for_none_and_empty_list():
@@ -72,7 +60,7 @@ def test_history_messages_caps_at_max_and_strips_extra_keys():
 
 def test_extract_tickers_forwards_history_to_the_api_call():
     """
-    Problema 27: a follow-up query with no company of its own (e.g. "How
+    Problem 27: a follow-up query with no company of its own (e.g. "How
     does it compare to its main rival in GPUs?" right after a Nvidia
     question) must have the prior turns forwarded into the OpenAI call, so
     the model has a chance to resolve "it" — this test asserts the history
@@ -198,7 +186,7 @@ def _wbd_style_info(**overrides) -> dict:
 
 def test_get_stock_summary_flags_pe_ratio_when_eps_negative():
     """
-    Problema 28: yfinance's trailingPE (583.38) and trailingEps (-1.28) were
+    Problem 28: yfinance's trailingPE (583.38) and trailingEps (-1.28) were
     observed mutually inconsistent for WBD — a positive P/E is mathematically
     impossible with negative earnings. Once EPS is negative, pe_ratio must
     not be passed through as if it were a trustworthy number.
@@ -224,7 +212,7 @@ def test_get_stock_summary_leaves_pe_ratio_alone_when_eps_positive():
 
 def test_extract_tickers_preserves_exchange_suffix():
     """
-    Problema 30: a bare non-US symbol (e.g. "ISP" for Intesa Sanpaolo) was
+    Problem 30: a bare non-US symbol (e.g. "ISP" for Intesa Sanpaolo) was
     observed resolving to a completely unrelated company on Yahoo Finance
     (ING Groep NV). Once the model returns a suffixed symbol (e.g.
     "ISP.MI"), the extraction pipeline must preserve it rather than
@@ -254,12 +242,9 @@ def test_extract_tickers_prompt_instructs_exchange_suffixes():
     assert "exchange suffix" in system_content
     assert "ISP.MI" in system_content
 
-
-# Problema 32 — notizie assenti per suffissi legali esteri non riconosciuti
-
 def test_search_phrase_strips_foreign_legal_suffixes():
     """
-    Problema 32: _SUFFIX_RE only recognized English legal suffixes, so a
+    Problem 32: _SUFFIX_RE only recognized English legal suffixes, so a
     yfinance longName like "Pirelli & C. S.p.A." was passed to NewsAPI
     whole (no real headline matches that verbatim), returning zero news
     results even though the ticker/financial data were correct. Both
@@ -277,11 +262,9 @@ def test_search_phrase_strips_foreign_legal_suffixes():
     assert _search_phrase("Apple Inc.") == "Apple"
 
 
-# Problema 37 — riconoscimento ticker generalizzato via yfinance.Search()
-
 def test_naive_ticker_candidates_matches_suffixed_symbol():
     """
-    Problema 37: confirmed case — the user already typed a complete,
+    Problem 37: confirmed case, the user already typed a complete,
     correctly-suffixed ticker ("PST.MI" for Poste Italiane) verbatim, and
     the LLM extraction call still returned nothing. The local, no-network
     fallback must catch this exact shape.
@@ -303,7 +286,7 @@ def test_naive_ticker_candidates_ignores_plain_words_and_bare_tickers():
 
 def test_extract_all_tickers_falls_back_to_naive_candidates_when_llm_finds_nothing():
     """
-    Problema 37: when the LLM extraction call returns NONE, a query
+    Problem 37: when the LLM extraction call returns NONE, a query
     containing an already-well-formed suffixed ticker must still resolve
     to that ticker via the local fallback, instead of surfacing the "could
     not identify a stock ticker" message the user actually hit.
@@ -359,7 +342,7 @@ def test_resolve_ticker_falls_back_to_candidate_when_search_finds_nothing():
 
 def test_get_stock_summary_retries_via_resolve_ticker_when_direct_lookup_fails():
     """
-    Problema 37, end-to-end at the financial_data layer: if the symbol as
+    Problem 37, end-to-end at the financial_data layer: if the symbol as
     given returns no price data, get_stock_summary() must retry once with
     the symbol resolved via resolve_ticker() before giving up, and the
     successful result must report the RESOLVED symbol (not the original
@@ -393,12 +376,6 @@ def test_get_stock_summary_still_errors_when_resolve_ticker_finds_nothing_either
         result = get_stock_summary("NOTAREALTICKER")
     assert "error" in result
 
-
-# Problema 38 — ticker sbagliato-E-inesistente in un confronto multi-azienda
-# ("can you compare Poste Italiane and Nvidia?" ha estratto "PT.MI" invece di
-# "PST.MI" — Problema 37's ticker-based retry cannot recover this, since it
-# searches for the wrong symbol text itself, not the company name).
-
 def test_extract_all_tickers_with_names_parses_ticker_name_pairs():
     """The extraction prompt now asks for TICKER:Company Name pairs so a
     wrong ticker guess can later be corrected by searching for the company
@@ -418,7 +395,7 @@ def test_extract_all_tickers_with_names_parses_ticker_name_pairs():
 
 
 def test_extract_all_tickers_with_names_tolerates_old_style_bare_tickers():
-    """Backward compatibility: a reply with no ':' at all (the pre-Problema
+    """Backward compatibility: a reply with no ':' at all (the pre-Problem
     38 format, and what every pre-existing mocked test in this file and in
     test_iteration1.py still simulates) must still parse, as a ticker with
     no name attached, not as a parsing failure."""
@@ -468,9 +445,9 @@ def test_extract_ticker_candidates_reports_truncation_with_names():
 
 def test_get_stock_summary_recovers_via_name_when_ticker_guess_does_not_exist():
     """
-    Problema 38, end-to-end at the financial_data layer: the confirmed
-    failure — the LLM guesses "PT.MI" for Poste Italiane (wrong AND
-    nonexistent), and Problema 37's ticker-based resolve_ticker("PT.MI")
+    Problem 38, end-to-end at the financial_data layer: the confirmed
+    failure, the LLM guesses "PT.MI" for Poste Italiane (wrong AND
+    nonexistent), and Problem 37's ticker-based resolve_ticker("PT.MI")
     retry also finds nothing usable, because it searches for the wrong
     string. Passing expected_name="Poste Italiane" adds a THIRD attempt,
     resolve_ticker("Poste Italiane"), which must find the real "PST.MI"
@@ -514,20 +491,20 @@ def test_get_stock_summary_still_errors_when_name_fallback_also_finds_nothing():
 
 def test_get_stock_summary_does_not_auto_correct_a_ticker_that_already_resolves():
     """
-    UPDATED by Problema 39 (1 settembre 2026) — this test originally
+    UPDATED by Problem 39 — this test originally
     asserted that a ticker resolving on the first attempt skipped the name
     check AND the extra yf.Search() call entirely (zero added cost, zero
     revalidation, by deliberate design at the time). That trade-off was
     revisited after a live, confirmed case ("PST" used for Poste Italiane
     instead of "PST.MI", itself a real ETF, so the direct lookup "worked"
-    and hid a wrong company with no warning at all) — see
+    and hid a wrong company with no warning at all), see
     _ticker_name_mismatch_warning() in financial_data.py.
 
     What is STILL true, and still asserted here: the ticker and data
     returned are never silently changed just because expected_name doesn't
     textually match the real company name (e.g. "Google" vs. the actual
     longName "Alphabet Inc." — a legitimate brand/legal-name mismatch, see
-    COMMON_TICKER_FIXES, Problema 12). Only the "no extra Search() call at
+    COMMON_TICKER_FIXES, Problem 12). Only the "no extra Search() call at
     all" half of the original guarantee changed — see
     test_get_stock_summary_no_warning_when_direct_success_ticker_matches_name_search
     for the dedicated regression test confirming this exact Google case
@@ -551,7 +528,7 @@ def test_get_stock_summary_does_not_auto_correct_a_ticker_that_already_resolves(
 
 def test_get_multiple_stock_summaries_corrects_independently_per_ticker():
     """
-    Problema 38, comparative path: get_multiple_stock_summaries() must
+    Problem 38, comparative path: get_multiple_stock_summaries() must
     forward each ticker's OWN name hint independently — a wrong guess for
     one company in a comparison must not affect, or borrow the name of,
     another company in the same request.
@@ -587,17 +564,11 @@ def test_get_multiple_stock_summaries_corrects_independently_per_ticker():
     assert results[1]["ticker"] == "NVDA"
     assert results[1]["name"] == "NVIDIA Corporation"
 
-
-# Problema 38 continued — manual re-testing after the fix above surfaced two
-# more extraction bugs on companies never exercised before: a purely
-# numeric non-US ticker (Toyota, Tokyo exchange), and a company whose own
-# legal name contains a comma (Block, Inc.).
-
 def test_naive_ticker_candidates_matches_numeric_prefixed_ticker():
     """
     Toyota's real Yahoo Finance ticker on its home exchange is "7203.T" —
     a purely numeric local code, unlike most US/European tickers. The
-    Problema 37 fallback regex originally required a letters-only prefix
+    Problem 37 fallback regex originally required a letters-only prefix
     and would not recognize this even if the user typed it verbatim.
     """
     assert _naive_ticker_candidates("What about 7203.T?") == ["7203.T"]
@@ -610,9 +581,9 @@ def test_naive_ticker_candidates_matches_numeric_prefixed_ticker():
 
 def test_extract_all_tickers_with_names_keeps_numeric_ticker():
     """
-    Problema 38 continued: "compare ASML, Nestle and Toyota" extracted
+    Problem 38 continued: "compare ASML, Nestle and Toyota" extracted
     Toyota's ticker as "7203.T", which the original isalpha() filter
-    silently discarded (first character is a digit) — Toyota never even
+    silently discarded (first character is a digit). Toyota never even
     reached financial_data, unlike a wrong-but-alphabetic guess. Widening
     the check to isalnum() must let it through, for both the new
     TICKER:Name format and the legacy bare-ticker format.
@@ -672,20 +643,6 @@ def test_extract_all_tickers_with_names_comma_in_name_does_not_swallow_next_entr
         {"ticker": "SQ", "name": "Block, Inc."},
         {"ticker": "NVDA", "name": "NVIDIA Corporation"},
     ]
-
-
-# Problema 38 continued (again) — the comma-in-name fix above correctly
-# reduced "what can you tell me about Block?" to the single pair {"ticker": "SQ",
-# "name": "Block, Inc."}, but Block's data still came back wrong: Bristol-
-# Myers Squibb (BMY) instead of Block. Root cause confirmed against
-# get_stock_summary(): Block changed ticker from "SQ" to "XYZ" in January
-# 2025, so yf.Ticker("SQ") no longer has price data; the ticker-based
-# fallback resolve_ticker("SQ") then fuzzy-matches "BMY" via yf.Search()'s
-# free-text index (apparently because "Squibb" contains "SQ"), and — under
-# the original ordering — that "success" was accepted before the
-# name-based fallback (which would have found "XYZ") ever got a chance to
-# run. Fix: try the name-based candidate BEFORE the ticker-based one once
-# the direct lookup has failed.
 
 def test_get_stock_summary_prefers_name_over_a_misleading_ticker_fallback_match():
     """
@@ -751,18 +708,6 @@ def test_get_stock_summary_falls_back_to_ticker_match_when_name_search_finds_not
 
     assert result["ticker"] == "PST.MI"
     assert "error" not in result
-
-
-# Problema 39 (1 settembre 2026, confirmed live) — a ticker that succeeds
-# on its own DIRECT lookup (no fallback involved at all) can still be the
-# wrong company: confirmed live case, a differently-phrased query made the
-# extractor guess bare "PST" for Poste Italiane, which is itself a real,
-# priced US ETF (ProShares UltraShort 7-10 Year Treasury) -- so the direct
-# lookup succeeded immediately and neither Problema 37/38 fallback above
-# ever ran. Fix (Option 3, chosen explicitly by the user over auto-
-# correcting or a name-string comparison): cross-check the ticker actually
-# used against resolve_ticker(expected_name) and attach a WARNING only,
-# never silently swap the ticker.
 
 def test_get_stock_summary_warns_when_direct_success_ticker_disagrees_with_name_search():
     """
@@ -837,7 +782,7 @@ def test_get_stock_summary_skips_mismatch_check_without_an_expected_name():
 def test_get_stock_summary_skips_mismatch_check_when_result_came_from_a_fallback():
     """
     The cross-check must fire ONLY on a direct, first-try success -- a
-    ticker that only succeeded via the Problema 37/38 fallback chain was
+    ticker that only succeeded via the Problems 37/38 fallback chain was
     already resolved by (or despite) the name hint, so re-running the same
     search again here would be redundant, not a genuine independent check.
     Reuses the confirmed SQ -> XYZ (Block) scenario, which succeeds via the
@@ -863,13 +808,9 @@ def test_get_stock_summary_skips_mismatch_check_when_result_came_from_a_fallback
     assert result["ticker"] == "XYZ"
     assert "ticker_mismatch_warning" not in result
 
-
-# Problema 34 — cronologia perde grafico/backtest/notizie dopo riavvio (o
-# dopo qualunque rerun nella stessa sessione)
-
 def test_save_and_load_message_round_trips_attachments(db_path):
     """
-    Problema 34: a message's rich content (stock data, backtest, news,
+    Problem 34: a message's rich content (stock data, backtest, news,
     portfolio summary) must survive being written to SQLite and read back,
     not just exist as a local Python variable during one Streamlit rerun.
     """
@@ -935,7 +876,7 @@ def test_json_default_falls_back_to_str_for_other_objects():
 
 def test_init_db_migrates_attachments_column_into_pre_existing_db(tmp_path):
     """
-    A DB created before Problema 34's fix (schema without the attachments
+    A DB created before Problem 34's fix (schema without the attachments
     column) must still work once the app is upgraded — CREATE TABLE IF NOT
     EXISTS alone is a no-op on it, so init_db() must also migrate the
     column into the pre-existing table rather than assuming every DB it
@@ -968,34 +909,8 @@ def test_init_db_migrates_attachments_column_into_pre_existing_db(tmp_path):
         {"role": "user", "content": "hello after migration"}
     ]
 
-
-# Problemi 40/41 — history_note generalization (live user testing, 4
-# settembre 2026): Problema 27's fix forwarded history but only ever
-# taught the model to resolve a pronoun back to a company already named.
-# Two real follow-up shapes fell outside that one case (see the
-# _extract_all_tickers_with_names() docstring for the full write-up):
-#   - Problema 41: "its main rival in GPUs?" / "e del suo principale
-#     competitor?" — a DIFFERENT, never-named company identified only by
-#     its relationship to one just discussed (case 2 of the new
-#     history_note).
-#   - Problema 40: "And its recent news?" right after "Compare Eni and
-#     Enel" — an ambiguous reference to ONE of several companies just
-#     discussed together, with nothing narrowing it to a single one
-#     (case 3 of the new history_note).
-# As with test_extract_tickers_forwards_history_to_the_api_call() above,
-# these tests assert the plumbing — that the right history reaches the
-# API call, that the new case-2/case-3 instructions are actually present
-# in the prompt sent, and that a (mocked) correctly-resolving reply is
-# parsed into the expected ticker(s) — not that the real gpt-4o-mini
-# reliably follows the new instructions. That reasoning happens inside
-# the real LLM, not in this code, and can only be confirmed by testing
-# against the real deployed app (see the Diario Tecnico for that
-# follow-up), the same limitation already noted for Problema 27's own
-# tests.
-
-
 def test_extract_tickers_resolves_relational_reference_to_new_company():
-    """Problema 41, case 2: a relational phrase ("its main rival in
+    """Problem 41, case 2: a relational phrase ("its main rival in
     GPUs") naming no company directly must still be extracted, given a
     single-company antecedent in history — this is the literal scenario
     from the user's screenshots, previously failing with "I could not
@@ -1044,7 +959,7 @@ def test_extract_tickers_resolves_relational_reference_generalizes_beyond_rivals
 
 
 def test_extract_tickers_resolves_ambiguous_reference_to_full_prior_set():
-    """Problema 40, case 3: an ambiguous singular reference ("its recent
+    """Problem 40, case 3: an ambiguous singular reference ("its recent
     news") after a turn that compared TWO companies together, with
     nothing in the final message narrowing it to one of them, must
     extract BOTH companies from that prior turn rather than guessing a
@@ -1076,7 +991,7 @@ def test_extract_tickers_resolves_ambiguous_reference_to_full_prior_set():
 
 
 def test_extract_tickers_still_refuses_unrequested_padding_with_history_present():
-    """Non-regression (Problema 9, unaffected by Problemi 40/41): even
+    """Non-regression (Problem 9, unaffected by Problems 40/41): even
     with history present and the new case-2/case-3 instructions active,
     a plain two-company comparison that does not reference any third
     company in any of the three history_note cases must still not have a
@@ -1102,7 +1017,7 @@ def test_extract_tickers_still_refuses_unrequested_padding_with_history_present(
 
 
 def test_classify_intent_treats_ambiguous_multi_company_followup_as_stock_query():
-    """Problema 40: the intent classifier's prompt must explicitly cover
+    """Problem 40: the intent classifier's prompt must explicitly cover
     the ambiguous-multi-company follow-up shape, not just the
     single-company one — this is the case that was actually observed
     misclassified as "unclear" in manual testing ("E le sue notizie
@@ -1124,20 +1039,6 @@ def test_classify_intent_treats_ambiguous_multi_company_followup_as_stock_query(
     assert "discussed MULTIPLE companies together" in sent_system_prompt
     sent_messages = mock_create.call_args.kwargs["messages"]
     assert {"role": "user", "content": "Confrontami Eni e Enel"} in sent_messages
-
-
-# Problema 40 continued — deterministic fallback (app.py), 4 settembre 2026:
-# the user's own live re-testing found the case-3 history_note instruction
-# above unreliable against the real model on two independent scenarios
-# ("Confrontami Eni e Enel" -> "E le sue notizie recenti?" and "Compare
-# Netflix and Disney" -> "how is it doing this year?") -- both returned
-# zero tickers instead of the two companies just discussed. Rather than
-# keep tuning the prompt, app.py's _last_multi_ticker_fallback() reaches
-# for the exact resolved ticker list already saved on the immediately
-# preceding turn's "multi_ticker" attachment (Problema 34) when normal
-# extraction finds nothing, instead of asking the LLM to re-derive it.
-# These tests exercise that function directly -- pure Python logic, no
-# LLM call and nothing to mock.
 
 def test_last_multi_ticker_fallback_returns_tickers_from_immediately_preceding_turn():
     from app import _last_multi_ticker_fallback
@@ -1233,18 +1134,6 @@ def test_last_multi_ticker_fallback_ignores_stale_multi_ticker_turn():
     ]
     assert _last_multi_ticker_fallback(history) is None
 
-
-# Problema 42 — product/app/platform recognition beyond the single "iPhone"
-# worked example (live user testing, 4 settembre 2026): "what about
-# instagram?" (no history involved at all) returned "I could not identify a
-# stock ticker in your query" even though the intent classifier correctly
-# recognized it as a stock_query -- the ticker-extraction prompt's only
-# worked example of product-implies-company was "iPhone" -> Apple, which
-# did not reliably generalize to a distinct-sounding owned brand like
-# Instagram (Meta Platforms). Both prompts now carry a small set of varied
-# examples spanning both shapes (a company's own famous product, and a
-# differently-named brand/app/platform it owns) instead of one.
-
 def test_extract_tickers_prompt_covers_owned_brand_beyond_own_product_name():
     """The system prompt sent to the ticker-extraction call must mention
     both shapes of product/brand reference, not just the company's own
@@ -1272,20 +1161,6 @@ def test_classify_intent_prompt_covers_owned_brand_beyond_own_product_name():
     assert result == "stock_query"
     sent_system_prompt = mock_create.call_args.kwargs["messages"][0]["content"]
     assert "instagram" in sent_system_prompt.lower()
-
-
-# Problema 43 — malformed/oversized "ticker" tokens rejected before a
-# lookup is even attempted (live user testing, 4 settembre 2026): "chi e
-# il suo maggiore concorrente nel lusso automobilistico?" right after
-# Ferrari correctly resolved to Lamborghini (the case-2 relational-
-# reference fix worked), but Lamborghini has no independent public ticker
-# (Volkswagen/Audi subsidiary) -- the model's malformed reply (no ":"
-# separator) was swallowed whole, spaces included, by the legacy
-# bare-token parsing path as a single "ticker", producing the confirmed
-# live failure "Could not retrieve data for LAMBORGHINI LAMBORGHINI
-# S.P.A.: No data found for ticker 'LAMBORGHINI LAMBORGHINI S.P.A.'"
-# instead of the normal, honest "I could not identify a stock ticker"
-# message.
 
 def test_extract_tickers_rejects_malformed_multiword_bare_token():
     """The literal confirmed failure: a malformed reply with no ':' and
