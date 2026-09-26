@@ -5,10 +5,7 @@ Iteration 4: modern Portfolio Theory optimization.
 Suggests a rebalancing of the user's tracked portfolio (Iteration 3) that
 maximises the Sharpe ratio for the set of tickers currently held, given
 their historical daily returns. This is the project's third algorithmic
-component alongside sentiment analysis (VADER) and the genetic-algorithm
-backtester, and move the "active portfolio
-management" language from the template description in an actual
-portfolio-level optimization, rather than only single-stock analysis.
+component.
 """
 
 from typing import Callable, Optional
