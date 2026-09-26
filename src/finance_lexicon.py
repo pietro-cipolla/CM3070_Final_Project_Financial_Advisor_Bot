@@ -8,8 +8,8 @@ VADER's sentiment lexicon is general-purpose, not finance-specific.
 FINANCIAL_LEXICON_OVERRIDE: dict[str, float] = {
     # Correction: VADER's general lexicon scores "beating" as violence
     # (-2.0). In financial headlines it is overwhelmingly "beating
-    # expectations/estimates" — positive. Found in manual testing
-    # (Ford, 2026-07-29): a headline about Ford's stock surging on an
+    # expectations/estimates" — positive. Found in manual testing:
+    # a headline about Ford's stock surging on an
     # earnings beat was scored negative because of this single word.
     "beating": 2.0,
     "beat": 1.5,
@@ -17,7 +17,7 @@ FINANCIAL_LEXICON_OVERRIDE: dict[str, float] = {
 
     # Negative — analyst/rating actions and financial-distress language,
     # entirely absent from VADER's general lexicon. "downgrade" found
-    # missing in manual testing (Salesforce/Levi Strauss, 2026-07-29).
+    # missing in manual testing.
     "downgrade": -1.8,
     "downgraded": -1.8,
     "downgrades": -1.8,
