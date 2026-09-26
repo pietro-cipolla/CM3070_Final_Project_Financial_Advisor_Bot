@@ -3,14 +3,10 @@ rag_pipeline.py
 RAG Pipeline layer — query intent classification, ticker extraction and
 prompt construction.
 
-Iteration 1 additions (Preliminary Report, Table 4.2 — HIGH priority items):
-  1. Multi-ticker extraction: a query can now reference up to 3 companies
-     (e.g. "Compare Apple, Microsoft and Google"), instead of only the first
-     ticker found.
+Iteration 1 additions:
+  1. Multi-ticker extraction: a query can now reference up to 3 companies.
   2. Query intent classification: queries are classified before ticker
-     extraction runs, so open-ended / off-topic queries are routed to a
-     clarification prompt instead of silently failing or hallucinating
-     an answer with no financial grounding.
+     extraction runs.
 """
 
 import os
@@ -24,15 +20,6 @@ MAX_TICKERS = 3
 
 VALID_INTENTS = {"stock_query", "open_ended", "unclear", "portfolio_query"}
 
-# Iteration 4, Sezione 4, Problema 27: how many recent messages of
-# conversation history to pass into the LLM calls below, so implicit
-# follow-up references (e.g. "it", "its main rival") can be resolved
-# against the previous turn instead of being classified as if the
-# conversation had no prior context. Capped rather than unbounded so the
-# prompt sent on every turn doesn't grow with the whole session — a small,
-# fixed window is enough to resolve the immediate-previous-turn references
-# actually seen in manual testing (Nvidia -> "its main rival in GPUs"),
-# and keeps the added prompt length/cost bounded and predictable.
 MAX_HISTORY_MESSAGES = 6
 
 
@@ -45,7 +32,7 @@ def _history_messages(history: list[dict] | None) -> list[dict]:
     Returns [] for None/empty input, so every caller below that accepts an
     optional history parameter behaves exactly as it did before this
     parameter existed when no history is passed — this is what keeps all
-    pre-Problema-27 callers and tests unaffected.
+    pre-Problem-27 callers and tests unaffected.
     """
     if not history:
         return []
@@ -62,34 +49,6 @@ COMMON_TICKER_FIXES = {
     "BERKSHIREHATHAWAY": "BRK.B",
 }
 
-# Problema 37 (Iteration 4, Sezione 4): last-resort pattern used ONLY when
-# the LLM extraction call itself returned no ticker at all (see
-# _naive_ticker_candidates below). Matches a token already written in the
-# exact "SYMBOL.SUFFIX" shape of a real Yahoo Finance non-US ticker (e.g.
-# "PST.MI", "ISP.MI", "BMW.DE") — i.e. the user already typed a ready-made,
-# correctly-formed ticker, and the LLM extractor still failed to recognize
-# it as one (confirmed case: "PST.MI" for Poste Italiane, not among the
-# extraction prompt's worked examples).
-#
-# Deliberately narrow: requires the literal dot + 1-3 letter exchange
-# suffix already present in the text, rather than matching any bare
-# uppercase word (which would also match ordinary acronyms like "CEO" or
-# "P/E" and risk resolving a false positive to some unrelated real
-# company via resolve_ticker()'s yfinance.Search() call). A bare US
-# ticker with no dot (e.g. a query that is just "AAPL") is NOT matched
-# here — that case is already handled correctly by the LLM extractor in
-# manual testing, so this fallback is scoped to the specific gap that was
-# actually demonstrated, not a general-purpose ticker detector.
-#
-# The symbol part allows digits as well as letters (Iteration 4 Sezione 4,
-# testing after Problema 38: several Asian exchanges — confirmed on Tokyo,
-# e.g. Toyota's "7203.T" — use a purely numeric local code instead of a
-# letter-based one; the original letters-only class would not match a
-# user-typed "7203.T" any more than it would recognize it elsewhere, see
-# the isalnum() fix in _extract_all_tickers_with_names below). The suffix
-# itself stays letters-only, since every real exchange suffix is (.T,
-# .MI, .DE, ...) — only ever the local instrument code itself is
-# sometimes numeric.
 _SUFFIXED_TICKER_RE = re.compile(r"\b[A-Z0-9]{1,6}\.[A-Z]{1,3}\b")
 
 
@@ -140,7 +99,7 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     open_ended instead of stock_query, which routed them to a generic
     clarification message and never gave the ticker extractor a chance to run at all. The explicit example below keeps the two prompts' behavior consistent.
 
-    Iteration 4 Sezione 4 addition (Problema 26): before this label existed,
+    Iteration 4 Section 4 addition (Problem 26): before this label existed,
     any portfolio-level question with no named ticker fell through to
     "unclear" and got the generic clarification fallback, even though
     app.py already has all the data needed to answer it via
@@ -152,36 +111,36 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     surfaces to the user — this keeps failures visible instead of masking
     them behind a generic clarification message.
 
-    Iteration 4 Sezione 4 addition (Problema 27): accepts an optional
+    Iteration 4 Section 4 addition (Problem 27): accepts an optional
     `history` (recent conversation turns, see _history_messages above), so
     a follow-up with no explicit company reference of its own can still be
     classified correctly by looking at what was just discussed, instead of
-    being judged in isolation. Defaults to None so every pre-Problema-27
+    being judged in isolation. Defaults to None so every pre-Problem-27
     caller/test is unaffected.
 
     Generalization pass: both this prompt and the extraction prompt below
     listed only 2-3 worked brand examples (Instagram, YouTube, WhatsApp)
     with no explicit statement that they were illustrative rather than an
-    exhaustive list — a real risk that the model reads a short worked-
+    exhaustive list, a real risk that the model reads a short worked-
     example list as the boundary of what it should recognize, instead of
     as one instance of a general pattern (any well-known brand/product/app
     owned by a larger public company). Added one explicit sentence to both
     prompts saying so, without adding new brand examples or a new
-    hardcoded list — the fix is a stated PRINCIPLE, not more enumeration,
+    hardcoded list, the fix is a stated PRINCIPLE, not more enumeration,
     which is the actual gap this closes. Deliberately the ONLY change made
     in this pass: broader changes (generalizing the relational-reference
-    resolution in case 2/3 below, or extending the Problema 39 cross-check
+    resolution in case 2/3 below, or extending the Problem 39 cross-check
     pattern elsewhere) were considered and set aside as out of scope this
     close to the submission deadline — see Future Work in the report.
 
-    Iteration 4 Sezione 4 addition (Problema 40, live user testing, 4
-    settembre 2026): Problema 27's fix forwarded history but the prompt's
+    Iteration 4 Section 4 addition (Problem 40, live user testing: 
+    Problem 27's fix forwarded history but the prompt's
     single worked example ("its main rival?" right after ONE company) left
     the model with no guidance for a follow-up whose antecedent is
     genuinely ambiguous — e.g. "And its recent news?" right after "Compare
     Eni and Enel", where nothing in either message says which of the two
     is meant. In manual testing this was classified "unclear" instead of
-    "stock_query", even though the query is not actually off-topic — it is
+    "stock_query", even though the query is not actually off-topic, it is
     a legitimate question the pipeline just cannot narrow to one company.
     The prompt below now says explicitly: classify this shape of follow-up
     as stock_query too, and let ticker extraction resolve the ambiguity by
@@ -254,15 +213,6 @@ def classify_query_intent(query: str, history: list[dict] | None = None) -> str:
     except Exception:
         return "stock_query"
 
-
-# Iteration 4 Sezione 4, Problema 38 continued: anchors one entry of a
-# "TICKER:Company Name" extraction reply. Matches a short (1-10 char),
-# ALL-CAPS/digit/dot/dash token immediately followed by ":", itself
-# immediately preceded by either the start of the string or a comma. Used
-# by _extract_all_tickers_with_names() to split the reply into entries
-# WITHOUT a naive comma-split, which breaks as soon as a company's own
-# legal name contains a comma (e.g. "Block, Inc.") — see that function's
-# comments for the confirmed failure this fixes.
 _PAIR_START_RE = re.compile(r"(?:^|,)\s*([A-Z0-9.\-]{1,10}):")
 
 
@@ -280,27 +230,27 @@ def _extract_all_tickers_with_names(
     query: str, history: list[dict] | None = None
 ) -> list[dict]:
     """
-    Iteration 4 Sezione 4 addition (Problema 38): the actual LLM-calling
+    Iteration 4 Section 4 addition (Problem 38): the actual LLM-calling
     implementation behind ticker extraction. Returns the FULL
     de-duplicated, corrected list of {"ticker": str, "name": str | None}
     pairs found — before the MAX_TICKERS cap is applied — instead of bare
     ticker strings.
 
-    Why a name is carried alongside each ticker: Problema 37 (below) fixed
+    Why a name is carried alongside each ticker: Problem 37 (below) fixed
     the case where the LLM found NO ticker at all for an already
-    correctly-typed symbol. Problema 38 is the opposite shape of failure:
-    the LLM DOES return a ticker, confidently, but the wrong one — found on
+    correctly-typed symbol. Problem 38 is the opposite shape of failure:
+    the LLM DOES return a ticker, confidently, but the wrong one, found on
     "can you compare Poste Italiane and Nvidia?", which extracted "PT.MI"
     instead of "PST.MI" (correctly extracted moments earlier for the same
-    company asked about alone — the model's guess for a non-US company not
+    company asked about alone, the model's guess for a non-US company not
     among the prompt's worked examples is not perfectly stable across
-    phrasings). Problema 37's fix (financial_data.resolve_ticker()) could
+    phrasings). Problem 37's fix (financial_data.resolve_ticker()) could
     not recover this on its own: its retry searches Yahoo Finance using the
     wrong TICKER text itself ("PT.MI"), not the company name the user
-    actually meant ("Poste Italiane") — searching for the wrong string
+    actually meant ("Poste Italiane"), searching for the wrong string
     predictably does not find the right company. Carrying the name through
     lets financial_data.get_stock_summary() retry with the actual company
-    name when the ticker-based attempts still come up empty — see its
+    name when the ticker-based attempts still come up empty, see its
     `expected_name` parameter for exactly where and why this is scoped.
 
     _extract_all_tickers() (below) remains the stable, backward-compatible
@@ -309,21 +259,21 @@ def _extract_all_tickers_with_names(
     this function and its new caller, extract_ticker_candidates(), carry
     the name through.
 
-    Iteration 4 Sezione 4 addition (Problemi 40/41, live user testing, 4
-    settembre 2026): the history_note below replaces the original
-    Problema-27 version, which only ever taught the model to resolve a
+    Iteration 4 Section 4 addition (Problems 40/41, live user testing): 
+    the history_note below replaces the original
+    Problem-27 version, which only ever taught the model to resolve a
     pronoun back to a company ALREADY named ("it" -> the company just
     discussed). Two real follow-up shapes fell outside that one case and
     both reproduced live:
 
-    - Problema 41 ("its main rival in GPUs?" right after "what about
+    - Problem 41 ("its main rival in GPUs?" right after "what about
       nvidia?", also "e del suo principale competitor?"): the query names
       a DIFFERENT company, defined only by its relationship to the one
       just discussed, and never mentions it directly. The old history_note
       only covered resolving back to an ALREADY-named company, so this
       fell through to the standalone "Do NOT add competitors, related
       companies..." instruction below (written for a different bug,
-      Problema 9 — see that instruction's own comment) and the model
+      Problem 9 — see that instruction's own comment) and the model
       correctly followed it: it did not invent a company. Net effect: a
       query the user explicitly asked (name the rival) was refused as if
       it were unrequested padding. Fix (case 2 below): a relational
@@ -333,14 +283,14 @@ def _extract_all_tickers_with_names(
       not padding, and must be resolved and extracted even though it was
       never named.
 
-    - Problema 40 ("And its recent news?" right after "Compare Eni and
+    - Problem 40 ("And its recent news?" right after "Compare Eni and
       Enel"): the antecedent is genuinely ambiguous — the prior turn named
       TWO companies, and nothing in the final message narrows to one of
-      them (unlike Problema 41's case, no relationship phrase picks out a
+      them (unlike Problem 41's case, no relationship phrase picks out a
       single answer). Guessing one (e.g. by recency) risks a confident,
       silently WRONG single-company answer — worse than admitting
       ambiguity, and the same "warn/broaden rather than silently guess"
-      principle already applied to Problema 39. Fix (case 3 below):
+      principle already applied to Problem 39. Fix (case 3 below):
       extract EVERY company from the ambiguous prior turn, so the query is
       answered for all of them via the existing multi-ticker comparison
       path instead of picking one at random.
@@ -348,7 +298,7 @@ def _extract_all_tickers_with_names(
     Both fixes are one generalization, not two special cases: resolve
     whatever set of companies the final message's reference actually and
     unambiguously points to — one already-named company (case 1, kept
-    from Problema 27), one new company when a relational phrase narrows to
+    from Problem 27), one new company when a relational phrase narrows to
     exactly one (case 2), or the full prior set when a bare reference
     leaves genuine ambiguity among several (case 3).
     """
@@ -462,38 +412,7 @@ def _extract_all_tickers_with_names(
             seen = set()
 
             def _keep(ticker_part: str) -> bool:
-                # Iteration 4 Sezione 4, Problema 38 continued: isalpha() ->
-                # isalnum() so a purely numeric local ticker code (e.g.
-                # Toyota's "7203.T" on the Tokyo exchange) is not silently
-                # discarded — the original check was written to reject
-                # stray artifacts like ".NONE" (Problema 11), which starts
-                # with a non-alphanumeric character either way, so widening
-                # it to isalnum() does not reopen that case.
-                #
-                # Iteration 4 Sezione 4 continued (Problema 42, live user
-                # testing, 4 settembre 2026): a real ticker is never more
-                # than a handful of characters and never contains a space —
-                # confirmed live on "chi e il suo maggiore concorrente nel
-                # lusso automobilistico?" (Ferrari -> Lamborghini, correctly
-                # resolved by the case-2 relational-reference fix, but
-                # Lamborghini has no independent public ticker of its own —
-                # it is a Volkswagen/Audi subsidiary). With nothing valid to
-                # put in the TICKER slot, the model replied without the
-                # required ":" separator, and the legacy bare-token parsing
-                # path below (which only splits on commas) swallowed the
-                # ENTIRE malformed reply, spaces and all, as one "ticker" —
-                # producing the confirmed failure "Could not retrieve data
-                # for LAMBORGHINI LAMBORGHINI S.P.A.: No data found for
-                # ticker 'LAMBORGHINI LAMBORGHINI S.P.A.'" instead of the
-                # normal, honest "I could not identify a stock ticker"
-                # message. The colon-anchored path (_PAIR_START_RE) already
-                # cannot produce this — its own pattern is bounded to 1-10
-                # characters from [A-Z0-9.\-] only, which excludes spaces —
-                # so this check only ever changes behavior on the legacy
-                # bare-token path, exactly where the bug lives. A well-formed
-                # real ticker (US or non-US with an exchange suffix, e.g.
-                # "PST.MI", "7203.T", "BRK.B") is unaffected by either bound.
-                return (
+                                return (
                     bool(ticker_part)
                     and ticker_part[:1].isalnum()
                     and "NONE" not in ticker_part
@@ -501,19 +420,6 @@ def _extract_all_tickers_with_names(
                     and len(ticker_part) <= 10
                 )
 
-            # Entries are anchored on the next short, ALL-CAPS "TICKER:"
-            # token that immediately follows a comma (or the start of the
-            # reply) — NOT on a naive split of the whole reply by comma.
-            # This matters because a company's own legal name routinely
-            # contains a comma before its own entity suffix (e.g. "Block,
-            # Inc.", "Meta Platforms, Inc."); a plain comma-split would cut
-            # such a name in half and misread its second half ("Inc.") as
-            # an extra, fabricated ticker of its own -- the confirmed
-            # failure on "what can you tell me about Block?", which produced tickers
-            # ["SQ", "INC."] instead of one company. A company name can
-            # never itself match this anchor: it is never written entirely
-            # in capitals, and is never immediately followed by a colon
-            # (the prompt above explicitly forbids a colon inside the name).
             entry_starts = list(_PAIR_START_RE.finditer(result))
             if entry_starts:
                 for i, m in enumerate(entry_starts):
@@ -530,12 +436,6 @@ def _extract_all_tickers_with_names(
                         seen.add(ticker_part)
                         pairs.append({"ticker": ticker_part, "name": name_part})
             else:
-                # Legacy bare-ticker format: no ":" anywhere in the reply
-                # (what every pre-Problema-38 mocked test still simulates,
-                # and what the model itself might still reply with despite
-                # the updated prompt). Comma-splitting is safe here — with
-                # no company name in the reply at all, there is nothing for
-                # an embedded comma to corrupt.
                 tokens = [t.strip() for t in result.split(",") if t.strip()]
                 for tok in tokens:
                     ticker_part = tok.strip().upper()
@@ -551,18 +451,6 @@ def _extract_all_tickers_with_names(
     if pairs:
         return pairs
 
-    # Problema 37 (Iteration 4, Sezione 4): the LLM found nothing at all —
-    # either it genuinely didn't recognize the query, or (as in the
-    # confirmed "PST.MI" case) the API call itself failed/errored. Before
-    # giving up and surfacing the "could not identify a stock ticker"
-    # message to the user, check whether they already typed a complete,
-    # correctly-suffixed ticker verbatim (see _naive_ticker_candidates) —
-    # this is a purely local, no-network check, so it costs nothing when
-    # it finds nothing either. No company name is known for a symbol
-    # recovered this way (it came from a regex match on the raw query
-    # text, not from the model's own understanding of the company), so
-    # "name" is None here — financial_data.get_stock_summary() treats a
-    # missing expected_name exactly like not being given one at all.
     naive = _naive_ticker_candidates(query)
     return [{"ticker": t, "name": None} for t in naive]
 
@@ -576,10 +464,10 @@ def _extract_all_tickers(query: str, history: list[dict] | None = None) -> list[
     extract_tickers_with_truncation_info() build on this so the LLM is only
     called once per query regardless of which public function is used.
 
-    Iteration 4 Sezione 4 addition (Problema 27): accepts an optional
+    Iteration 4 Section 4 addition (Problem 27): accepts an optional
     `history` (recent conversation turns), forwarded unchanged to
     _extract_all_tickers_with_names(). See that function's docstring for
-    the history-resolution behavior and the Problema 37/38 fallback chain
+    the history-resolution behavior and the Problem 37/38 fallback chain
     — this wrapper only strips the name back off the result.
     """
     return [pair["ticker"] for pair in _extract_all_tickers_with_names(query, history)]
@@ -589,7 +477,7 @@ def extract_ticker_candidates(
     query: str, history: list[dict] | None = None
 ) -> tuple[list[dict], bool]:
     """
-    Iteration 4 Sezione 4 addition (Problema 38): like
+    Iteration 4 Section 4 addition (Problem 38): like
     extract_tickers_with_truncation_info() below, but each entry is a
     {"ticker": str, "name": str | None} pair instead of a bare ticker
     string, so app.py can forward the associated company name into
@@ -598,7 +486,7 @@ def extract_ticker_candidates(
     `expected_names` parameter (comparative path).
 
     Not specific to non-US tickers in how it works, even though the
-    demonstrated failure (Problema 38: "PT.MI" guessed for Poste Italiane)
+    demonstrated failure (Problem 38: "PT.MI" guessed for Poste Italiane)
     was one — a wrong-and-nonexistent ticker guess for ANY market can only
     be recovered by searching for the company name instead of the (already
     shown to be wrong) symbol, so this plumbing is market-agnostic by
@@ -623,7 +511,7 @@ def extract_tickers_from_query(query: str, history: list[dict] | None = None) ->
     supports (to surface that to the user, rather than silently dropping
     them) should use extract_tickers_with_truncation_info() instead.
 
-    `history` (Iteration 4 Sezione 4, Problema 27): optional recent
+    `history` (Iteration 4 Section 4, Problem 27): optional recent
     conversation turns, forwarded to _extract_all_tickers() to resolve
     implicit follow-up references. Defaults to None, unchanged behavior.
     """
@@ -644,7 +532,7 @@ def extract_tickers_with_truncation_info(
     fabricate a misleading explanation (e.g. claiming a company's data was
     unavailable when it was simply never requested).
 
-    `history` (Iteration 4 Sezione 4, Problema 27): optional recent
+    `history` (Iteration 4 Section 4, Problem 27): optional recent
     conversation turns, forwarded to _extract_all_tickers() to resolve
     implicit follow-up references. Defaults to None, unchanged behavior.
     """
@@ -695,14 +583,14 @@ def build_prompt(
     opt-in flag (default False, so existing callers and tests are
     unaffected) that adds the plain-language instruction above.
 
-    Iteration 4 Sezione 4 addition (Problema 27): an optional `history`
+    Iteration 4 Section 4 addition (Problem 27): an optional `history`
     (recent conversation turns) is inserted between the system prompt and
     the current user question, so the final answer itself can also be
     phrased with awareness of what was just discussed (e.g. an explicit
     "compared to Nvidia, which you just asked about" instead of reading as
     a reply with no memory of the conversation) — completing the same fix
     already applied to intent classification and ticker extraction above.
-    Defaults to None, so every pre-Problema-27 caller/test producing a
+    Defaults to None, so every pre-Problem-27 caller/test producing a
     two-message [system, user] list is unaffected.
     """
     if isinstance(stock_data, list):
