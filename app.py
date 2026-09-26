@@ -1,23 +1,3 @@
-"""
-Financial Advisor Bot - Feature Prototype
-Iteration 2: migrates the UI to the wide/sidebar "FULL" layout, adds a
-Plotly price chart with a 20-day moving average (MA20) for single-ticker
-queries, and adds real news headlines via NewsAPI (replacing the more
-limited yfinance-bundled headlines used in Iteration 1).
-Iteration 3: adds SQLite-backed conversation memory (resumable via a
-session ID) and a portfolio tracker, plus three inclusive-design
-improvements — colourblind-safe chart colours, an optional simplified
-explanation mode, and always-on language-matching in responses.
-Iteration 4: adds VADER-based sentiment icons on news headlines, a
-genetic-algorithm-optimized moving-average-crossover backtest shown
-alongside the price chart, and a Markowitz (MPT) mean-variance
-optimization panel that suggests rebalancing weights for the tracked
-portfolio, three algorithmic components (language-model reasoning,
-a genetic algorithm, and mean-variance optimization) grounding the
-template's "active portfolio management" language in real,
-independently testable code.
-"""
-
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -75,9 +55,9 @@ def _cached_current_price(ticker: str):
 
 def _reconcile_price_with_cache(stock_data: dict, ticker: str) -> dict:
     """
-    Problema 33 (Iteration 4, Sezione 4): get_stock_summary() always makes
+    Problem 33 (Iteration 4, Section 4): get_stock_summary() always makes
     a fresh live fetch, while the Portfolio Tracker sidebar uses
-    _cached_current_price() (@st.cache_data(ttl=60)) for the same ticker —
+    _cached_current_price() (@st.cache_data(ttl=60)) for the same ticker, 
     within the same rerun these can legitimately return slightly different
     prices a few seconds/cents apart, but were being shown side by side
     with no indication they were two different snapshots (found on UBER:
@@ -85,7 +65,7 @@ def _reconcile_price_with_cache(stock_data: dict, ticker: str) -> dict:
     P&L that then didn't reconcile against either rounded number shown).
     Rather than surface the timing gap, this makes the "Data retrieved"/
     comparison panel adopt the SAME cached price the sidebar uses whenever
-    it's available, so the two can never disagree within one rerun — the
+    it's available, so the two can never disagree within one rerun, the
     figure the LLM reasons from and the figure shown in both panels all
     come from the one cached call. Falls back to stock_data's own
     just-fetched price if the cached lookup itself returns None (e.g. a
@@ -97,13 +77,6 @@ def _reconcile_price_with_cache(stock_data: dict, ticker: str) -> dict:
         stock_data["price"] = cached_price
     return stock_data
 
-
-# Iteration 4: both the backtester and the MPT optimizer need historical
-# closing prices for the same tickers within a single run,
-# cached so the two features never double-fetch from yfinance
-# for the same ticker. A longer TTL than the current-price cache is
-# appropriate: a full year of historical closes does not meaningfully
-# change within a 15 minute window.
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_closing_prices(ticker: str):
     return get_closing_prices(ticker)
@@ -160,15 +133,15 @@ def render_price_chart(ticker: str) -> None:
     not be retrieved, so a charting failure never blocks the rest of the
     response.
 
-    Problema 31 (Iteration 4, Sezione 4): when the retrieved history is
+    Problem 31 (Iteration 4, Section 4): when the retrieved history is
     down to 1-2 points (e.g. a very recently listed or thinly-traded
     ticker), Plotly's auto-detected x-axis tick granularity could fall back
     to a sub-second format ("23:59:59.999") instead of a date, because the
     axis was never given an explicit tickformat and had to guess one from
     an almost-degenerate date range. Two independent fixes: (a) an explicit
     day-level tickformat, so the axis never guesses a sub-day granularity
-    regardless of how narrow the date range is; (b) a minimum point count
-    below which the chart isn't rendered at all — a 1-2 point "line" chart
+    regardless of how narrow the date range is, (b) a minimum point count
+    below which the chart isn't rendered at all, a 1-2 point "line" chart
     isn't informative even with a fixed axis, so a caption explaining why
     is more honest than a chart that looks like real data.
     """
@@ -201,13 +174,13 @@ def render_price_chart(ticker: str) -> None:
 def _render_backtest_result(ticker: str, result: dict) -> None:
     """
     Render an already-computed backtest result dict (extracted from
-    render_backtest's body — Problema 34, Iteration 4 Sezione 4 — so a
+    render_backtest's body, Problem 34, Iteration 4 Section 4, so a
     result FROZEN from a past turn, restored from persisted attachments
     after a restart, can be rendered through the exact same code as a
     freshly-computed one, instead of re-running the genetic algorithm
     against whatever price data happens to be available now, which is not
     guaranteed to reproduce the original result bit-for-bit across a
-    restart — see the clarification note on Problema 24).
+    restart).
     """
     if result["note"] is not None:
         st.caption(f"Backtest unavailable for {ticker}: {result['note']}")
@@ -251,11 +224,6 @@ def render_backtest(ticker: str) -> None:
     _render_backtest_result(ticker, result)
 
 
-# Iteration 4: sentiment icon shown next to each headline. Colour-coded
-# rather than red/green-only, consistent with the colourblind-safe design
-# principle already applied to the price chart in Iteration 3 (a shape/hue
-# combination — traffic-light colours plus distinct positions in the UI —
-# rather than relying on red/green alone to carry meaning).
 SENTIMENT_ICONS = {"positive": "🟢", "neutral": "⚪", "negative": "🔴"}
 
 
@@ -267,7 +235,7 @@ def render_news(news_items: list[dict], ticker: str) -> None:
     Does not render its own "Recent news" title: callers wrap this in an
     st.expander(f"... — {ticker}") that already carries that heading, and
     printing it again here produced a visibly duplicated title in the UI
-    (Iteration 2, Problema 14).
+    (Iteration 2, Problem 14).
     """
     if not news_items:
         return
@@ -290,22 +258,22 @@ def _render_news_expander(ticker: str, news_items: list[dict]) -> None:
 def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
     """
     Render the "Data retrieved" expander (+ price chart) for a single
-    ticker. Extracted from the live chat-turn body (Problema 34, Iteration
-    4 Sezione 4) so the exact same rendering can be reused both live and
+    ticker. Extracted from the live chat-turn body (Problem 34, Iteration
+    4 Section 4) the exact same rendering can be reused both live and
     when reconstructing a past turn from persisted attachments after a
-    restart — one implementation that structurally cannot drift between
+    restart, one implementation that structurally cannot drift between
     the two call sites, unlike the original inline-only version.
     """
     with st.expander(f"📊 Data retrieved for {ticker}", expanded=True):
-        # Problema 39: a ticker that resolved successfully but doesn't
+        # Problem 39: a ticker that resolved successfully but doesn't
         # match the company name it was extracted for (e.g. "PST" used
-        # for Poste Italiane instead of "PST.MI") — shown as a warning,
+        # for Poste Italiane instead of "PST.MI"), shown as a warning,
         # never auto-corrected. See _ticker_name_mismatch_warning() in
         # financial_data.py for why this only fires as a caption.
         if stock_data.get("ticker_mismatch_warning"):
             st.warning(stock_data["ticker_mismatch_warning"])
 
-        # Problema 29: dividend yield, beta and sector are also in the RAG
+        # Problem 29: dividend yield, beta and sector are also in the RAG
         # context the model answers from (build_data_context) — shown here
         # too so every field the model can cite has a visible check.
         dividend_display = (
@@ -329,9 +297,9 @@ def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
             st.write(f"**Target price:** ${stock_data.get('target_price', 'N/A')}")
         st.caption(f"Data retrieved at: {stock_data.get('timestamp', 'N/A')}")
 
-        # Problema 34: on a restored past turn this shows the CURRENT price
+        # Problem 34: on a restored past turn this shows the CURRENT price
         # history, not a frozen snapshot of what the chart looked like at
-        # the time — a deliberate, documented scope limit (freezing a full
+        # the time, a deliberate, documented scope limit (freezing a full
         # OHLC series as JSON per message would bloat the DB significantly
         # for comparatively little value versus the frozen numeric panel,
         # backtest and news above), not an oversight.
@@ -341,26 +309,26 @@ def _render_single_ticker_data_panel(ticker: str, stock_data: dict) -> None:
 def _render_multi_ticker_data_panel(tickers: list[str], valid: list[dict], failed: list[dict]) -> None:
     """Render the "Data retrieved" expander for the multi-ticker
     comparative path. Extracted for the same reason as
-    _render_single_ticker_data_panel above (Problema 34).
+    _render_single_ticker_data_panel above (Problem 34).
 
-    Problema 40 (Iteration 4/5): the expander TITLE used to be built from
+    Problem 40 (Iteration 4/5): the expander TITLE used to be built from
     `tickers`, the caller's original, unresolved ticker guesses -- while
     the BODY below has always used each stock_data's own resolved ticker
     (get_multiple_stock_summaries() already stamps a resolved "ticker" key
     on every success, and the original guess on every failure). Whenever
-    the Problema 37/38 fallback actually swapped a guess for a different
+    the Problems 37/38 fallback actually swapped a guess for a different
     real symbol (confirmed live: "TLIT.MI" guessed, resolved to "PST.MI"
     for Poste Italiane), the title and the body disagreed -- e.g. a title
     reading "PIRC.MI, TLIT.MI" above a body showing "PIRC.MI" and
     "PST.MI". The single-ticker path already got this exact fix under
-    Problema 37/38 ("use stock_data['ticker'], not the original guess");
+    Problems 37/38 ("use stock_data['ticker'], not the original guess");
     the multi-ticker path was mistakenly believed at the time to need no
-    equivalent change, since the BODY was already correct -- only the
-    title was not. The `tickers` parameter is kept (both call sites --
-    the live turn and the history-restore dispatcher -- already pass it)
+    equivalent change, since the BODY was already correct, only the
+    title was not. The `tickers` parameter is kept (both call sites,
+    the live turn and the history-restore dispatcher, already pass it)
     but is no longer used for the title, which is now built the same way
     the persisted "multi_ticker" attachments dict already did
-    (`[d["ticker"] for d in valid]`) -- extended here to also include each
+    (`[d["ticker"] for d in valid]`), extended here to also include each
     failed lookup's own (unresolved, since it never succeeded) ticker, so
     a failed guess still appears in the title exactly as before.
     """
@@ -383,9 +351,9 @@ def _render_multi_ticker_data_panel(tickers: list[str], valid: list[dict], faile
 
 
 def _render_portfolio_summary_panel(summary: dict) -> None:
-    """Render the "Your portfolio" expander (Problema 26). Extracted so a
+    """Render the "Your portfolio" expander (Problem 26). Extracted so a
     past portfolio_query turn can also be reconstructed after a restart
-    (Problema 34) instead of only ever showing this once, live."""
+    (Problem 34) instead of only ever showing this once, live."""
     with st.expander("💼 Your portfolio", expanded=True):
         for h in summary["holdings"]:
             st.write(f"**{h['ticker']}** — {h['shares']:g} sh @ ${h['purchase_price']:.2f}")
@@ -406,14 +374,14 @@ def _render_portfolio_summary_panel(summary: dict) -> None:
 
 def _last_multi_ticker_fallback(history: list[dict]) -> list[str] | None:
     """
-    Problema 40 (Iteration 4 Sezione 4, continued -- live user testing, 4
-    settembre 2026): a deterministic fallback for a follow-up whose
+    Problem 40 (Iteration 4 Section 4, continued, live user testing:
+    a deterministic fallback for a follow-up whose
     singular pronoun/possessive is ambiguous between the multiple
     companies just compared (e.g. "And its recent news?" right after
     "Compare Eni and Enel"). The ticker-extraction LLM was explicitly
     asked to resolve this itself (see history_note's case 3 in
     _extract_all_tickers_with_names()), and the mocked tests for that
-    case pass -- but the user's own live re-testing found it unreliable
+    case pass, but the user's own live re-testing found it unreliable
     against the real model: it returned zero tickers, not the two
     companies just discussed, on two independent real scenarios
     ("Confrontami Eni e Enel" -> "E le sue notizie recenti?" and "Compare
@@ -422,11 +390,11 @@ def _last_multi_ticker_fallback(history: list[dict]) -> list[str] | None:
     against a model this code cannot call from a test, this reaches for
     data the app already has with certainty: the exact resolved ticker
     list saved on the immediately preceding turn's "multi_ticker"
-    attachment (Problema 34), instead of asking the LLM to re-derive that
+    attachment (Problem 34), instead of asking the LLM to re-derive that
     same set from prose.
 
     Called ONLY when normal ticker extraction has already found nothing
-    (see the caller) -- it never overrides a successful extraction, so
+    (see the caller), it never overrides a successful extraction, so
     the two shapes of follow-up already confirmed working live (a
     pronoun resolving to a single prior company, case 1; a relational
     phrase resolving to a new one, case 2) are completely unaffected by
@@ -453,8 +421,8 @@ def _last_multi_ticker_fallback(history: list[dict]) -> list[str] | None:
     correctly falling through to open_ended/unclear. Not observed in the
     user's own testing of that exact scenario (see the Diario Tecnico);
     judged an acceptable trade-off against the confirmed, repeated
-    failure this fallback fixes -- the same broaden-rather-than-silently-
-    guess-wrong principle already applied to Problema 39.
+    failure this fallback fixes, the same broaden-rather-than-silently-
+    guess-wrong principle already applied to Problem 39.
     """
     if not history:
         return None
@@ -470,18 +438,16 @@ def _last_multi_ticker_fallback(history: list[dict]) -> list[str] | None:
 
 def _render_message_attachments(attachments: dict) -> None:
     """
-    Problema 34 (Iteration 4, Sezione 4): reconstruct the rich expanders
+    Problem 34 (Iteration 4, Section 4): reconstruct the rich expanders
     (data panel, backtest, news, portfolio summary) for a past assistant
     turn restored from SQLite after an app restart, from the JSON
     "attachments" persisted alongside that message's plain text — instead
     of the restored history showing text only, with every chart/backtest/
-    data/news box silently gone, as it did before this fix (the bug was
-    found via the user's own intuition during Test 4.6, then confirmed by
-    reading save_message()/the history-restore loop in the source).
+    data/news box silently gone, as it did before this fix.
 
     Dispatches on attachments["kind"], set when the attachment was saved
     (see the chat turn below). Deliberately silent (no-op) on an unknown
-    or missing "kind" — attachments are always a strict *addition* to the
+    or missing "kind", attachments are always a strict *addition* to the
     plain text already restored, so a forward-compatibility gap here must
     never raise or block the rest of the history from rendering.
     """
@@ -652,15 +618,15 @@ with st.sidebar:
 st.title("📈 Financial Advisor Bot")
 
 # Display conversation history
-# Problema 34 (Iteration 4, Sezione 4): this loop used to write only
-# msg["content"] — the plain text — so EVERY past turn's rich content
+# Problem 34 (Iteration 4, Section 4): this loop used to write only
+# msg["content"], the plain text, EVERY past turn's rich content
 # (data panel, backtest, news, price chart) was gone on any rerun other
 # than the one that generated it, whether that rerun was triggered by an
-# app restart (the scenario Test 4.6 targeted) or, as already documented
+# app restart or, as already documented
 # as a known limitation before this fix, by any other same-session
 # interaction (e.g. adding a portfolio holding from the sidebar). Both
 # had the same root cause: the rich content only ever existed as local
-# Python variables during the turn's own rerun, never carried forward —
+# Python variables during the turn's own rerun, never carried forward,
 # not even in st.session_state, let alone SQLite. Reconstructing it here
 # from msg["attachments"] (present both for messages loaded from SQLite
 # after a restart, and for ones appended earlier in the same live
@@ -680,21 +646,11 @@ if user_query:
     # Show user message
     with st.chat_message("user"):
         st.write(user_query)
-    # Problema 27 (Iteration 4, Sezione 4): snapshot the conversation as it
-    # stood BEFORE this turn's user message, so it can be passed as
-    # "history" to the LLM calls below without the current query
-    # duplicating itself inside its own history.
     recent_history = st.session_state.messages[-6:]
     st.session_state.messages.append({"role": "user", "content": user_query})
     save_message(st.session_state.session_id, "user", user_query)
 
     with st.chat_message("assistant"):
-        # Problema 34 (Iteration 4, Sezione 4): whatever this turn produces
-        # beyond plain text — a data panel, a backtest, news, a portfolio
-        # summary — is captured here as a JSON-safe dict and persisted
-        # alongside the message text, instead of only existing as local
-        # variables for the duration of this rerun. None for a turn with no
-        # rich content (unclear/open_ended/error/no-data responses).
         attachments = None
 
         with st.spinner("Understanding your question..."):
@@ -718,11 +674,6 @@ if user_query:
             st.write(response)
 
         elif intent == "portfolio_query":
-            # Problema 26 (Iteration 4, Sezione 4): reuses the same
-            # compute_portfolio_summary() already used by the sidebar
-            # Portfolio Tracker widget, so a portfolio-level question asked
-            # in chat and the sidebar numbers can never disagree — one
-            # summary, two places it's shown.
             holdings = get_portfolio(st.session_state.session_id)
             if not holdings:
                 response = (
@@ -758,15 +709,6 @@ if user_query:
 
         else:  # intent == "stock_query"
             with st.spinner("Retrieving financial data..."):
-                # Problema 38 (Iteration 4, Sezione 4): extract_ticker_candidates()
-                # returns {"ticker", "name"} pairs instead of bare ticker strings,
-                # so the company name the LLM associated with each ticker guess
-                # can be forwarded as get_stock_summary()/get_multiple_stock_
-                # summaries()'s expected_name(s) — this is what lets a
-                # wrong-and-nonexistent guess (e.g. "PT.MI" for Poste Italiane)
-                # self-correct via a live company-name search. tickers/truncated
-                # below are derived from the same pairs, so every existing
-                # display/branching line further down is unaffected.
                 ticker_candidates, truncated = extract_ticker_candidates(user_query, history=recent_history)
                 tickers = [c["ticker"] for c in ticker_candidates]
                 name_hints = {c["ticker"]: c["name"] for c in ticker_candidates if c["name"]}
@@ -778,8 +720,6 @@ if user_query:
                         f"{', '.join(tickers)}."
                     )
 
-                # Problema 40 continued: extraction found nothing on its own --
-                # before giving up, check the deterministic fallback above.
                 used_ambiguous_followup_fallback = False
                 if not tickers:
                     fallback_tickers = _last_multi_ticker_fallback(recent_history)
@@ -806,18 +746,6 @@ if user_query:
                         )
                         st.write(response)
                     else:
-                        # Problema 38: use the RESOLVED ticker (stock_data["ticker"])
-                        # for every downstream call below, not the original
-                        # tickers[0] guess — if get_stock_summary() had to correct
-                        # the guess (Problema 37/38), tickers[0] is the wrong
-                        # symbol that already failed once; the cache lookup,
-                        # backtest and news search all need the symbol that
-                        # actually has data, or they independently fail again
-                        # even though the data panel above now shows the right
-                        # company. This was a latent gap already present before
-                        # this fix (the retry only ever benefited get_stock_
-                        # summary()'s own return value), just never exercised
-                        # end-to-end until a correction actually happened.
                         resolved_ticker = stock_data["ticker"]
                         stock_data = _reconcile_price_with_cache(stock_data, resolved_ticker)
                         _render_single_ticker_data_panel(resolved_ticker, stock_data)
