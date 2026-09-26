@@ -1,12 +1,6 @@
 """
 portfolio.py
-Portfolio tracker business logic — Iteration 3.
-
-Kept separate from database.py (pure persistence) and from app.py (pure
-UI), so profit/loss calculation can be unit-tested with plain dicts and a
-fake price lookup, without touching SQLite or the network. This mirrors the
-existing separation between financial_data.py (retrieval) and
-rag_pipeline.py (reasoning over retrieved data).
+Portfolio tracker business logic - Iteration 3.
 """
 
 from typing import Callable, Optional
