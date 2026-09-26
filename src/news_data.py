@@ -7,10 +7,6 @@ Iteration 2: yfinance's bundled `Ticker.news` (used in Iteration 1) is
 inconsistent in coverage and freshness. NewsAPI's `/v2/everything` endpoint
 gives a dedicated, keyword-searchable news feed, so headlines here are
 sourced from NewsAPI instead.
-
-Uses the free "Developer" tier (https://newsapi.org/pricing): 100 requests/
-day, articles up to 1 month old with a ~24h publication delay, development/
-testing use only.
 """
 
 import os
@@ -27,7 +23,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 _CANDIDATE_MULTIPLIER = 3
 
-# Problema 32 (Iteration 4, Sezione 4): this regex originally only covered
+# Problem 32 Iteration 4, Section 4: this regex originally only covered
 # English-language legal suffixes, so a company whose yfinance longName
 # uses a foreign one (e.g. "Pirelli & C. S.p.A.") was never shortened at
 # all — the full legal name was then sent to NewsAPI as an exact-phrase
@@ -65,7 +61,7 @@ def _search_phrase(name: str) -> str:
     form actually used in news headlines (e.g. "Ford"), by stripping trailing
     legal-entity suffixes and a leading "The ". Applied in a loop since a
     name can have more than one trailing clause to strip (e.g. "X Inc.,
-    a Delaware Corporation" — not expected from yfinance in practice, but
+    a Delaware Corporation", not expected from yfinance in practice, but
     cheap to handle defensively).
     """
     prev = None
