@@ -46,7 +46,7 @@ def _json_default(obj):
     """
     json.dumps() fallback for objects that aren't natively JSON-serializable.
 
-    Problema 34 (Iteration 4, Sezione 4): message attachments can contain
+    Problem 34 (Iteration 4, Section 4): message attachments can contain
     numpy scalar types surfaced from the genetic-algorithm backtester (e.g.
     np.int64, np.float64 inside a backtest result dict) — these are not
     handled by the stdlib json encoder. numpy scalars all expose a zero-arg
@@ -78,11 +78,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             )
             """
         )
-        # Problema 34: pre-existing DBs created before this fix won't have
-        # the attachments column (CREATE TABLE IF NOT EXISTS is a no-op on
-        # them), so migrate it in explicitly rather than only handling the
-        # fresh-DB case — same idempotent-migration approach as the rest of
-        # this module's "safe to call on every app startup" contract.
+       
         existing_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(conversations)")
         }
@@ -121,7 +117,7 @@ def save_message(
     """
     Persist a single chat message for a session.
 
-    Problema 34 (Iteration 4, Sezione 4): attachments is the structured data
+    Problema 34 (Iteration 4, Section 4): attachments is the structured data
     behind a message's rich content (retrieved stock data, backtest result,
     news items, or portfolio summary — see app.py's _render_message_attachments
     dispatcher), JSON-serialized here so it survives both an app restart and
@@ -153,7 +149,7 @@ def load_conversation(session_id: str, db_path: str = DEFAULT_DB_PATH) -> list[d
     Return the full message history for a session, oldest first, in the
     same {"role": ..., "content": ...} shape used by st.session_state.messages.
 
-    Problema 34 (Iteration 4, Sezione 4): a message saved with attachments
+    Problema 34 (Iteration 4, Section 4): a message saved with attachments
     also gets an "attachments" key holding the parsed dict. That key is
     deliberately OMITTED (not set to None) for messages saved without
     attachments — both plain messages saved after this fix and every
