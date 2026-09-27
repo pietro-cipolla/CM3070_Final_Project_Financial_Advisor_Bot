@@ -115,13 +115,13 @@ The app will open at `http://localhost:8501` in your browser.
 
 Type any question about one or more publicly traded stocks in the chat input. Examples:
 
-- "What is Tesla's P/E ratio?" — a single-ticker query, shown alongside a live price chart and a transparency panel with the underlying data.
-- "Compare Tesla and Ford" — a multi-ticker comparison, with figures clearly attributed to each company.
-- "What's the latest sentiment on Novartis?" — live news retrieval with a three-colour sentiment indicator.
-- "Backtest NVS over the past year" — a genetic-algorithm-evolved trading strategy compared against buy-and-hold.
-- "What's a good tech stock to buy right now?" — an open-ended query, which prompts for a sector, market-cap range, or specific company rather than answering from unsupported parametric knowledge.
+- "What is Tesla's P/E ratio?" a single-ticker query, shown alongside a live price chart and a transparency panel with the underlying data.
+- "Compare Tesla and Ford" a multi-ticker comparison, with figures clearly attributed to each company.
+- "What's the latest sentiment on Novartis?" live news retrieval with a three-colour sentiment indicator.
+- "Backtest NVS over the past year" a genetic-algorithm-evolved trading strategy compared against buy-and-hold.
+- "What's a good tech stock to buy right now?" an open-ended query, which prompts for a sector, market-cap range or specific company rather than answering from unsupported parametric knowledge.
 
-You can also track real holdings in the **Portfolio Tracker** tab, and reload a previous conversation and portfolio at any time by pasting its **Session ID** into the sidebar — both are persisted locally via SQLite.
+You can also track real holdings in the **Portfolio Tracker** tab and reload a previous conversation and portfolio at any time by pasting its **Session ID** into the sidebar, both are persisted locally via SQLite.
 
 The bot retrieves live data from Yahoo Finance and NewsAPI.org and provides analysis grounded in that data, never from the model's own training knowledge alone.
 
